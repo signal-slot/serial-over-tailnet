@@ -65,6 +65,7 @@ tools/mkimage.sh n8r2 release
 | `crates/adapter-core` | Interactive setup shell. I/O and device operations are traits, so the wizard is unit-tested on the host. |
 | `tools/hostnode` | Runs tsnode on Linux for verification: joins a real tailnet and serves an echo server. |
 | `firmware` | ESP32-S3 firmware (esp-idf-svc): setup console, USB host (CDC-ACM, FTDI, CP210x, CH34x), Wi-Fi, Tailscale node, TCP bridge. |
+| `hardware/case` | 3D-printed case for the YD-ESP32-S3: OpenSCAD source and ready-to-print STLs, with and without pin headers ([README](hardware/case/README.md)). |
 
 tsnode is split into these modules.
 

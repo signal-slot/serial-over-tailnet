@@ -65,6 +65,7 @@ tools/mkimage.sh n8r2 release
 | `crates/adapter-core` | 対話式セットアップシェル。入出力とデバイス操作を trait で抽象化し、ウィザードをホストで単体テストする。 |
 | `tools/hostnode` | tsnode を Linux で動かす検証ツール。実 Tailnet に参加して echo サーバを公開する。 |
 | `firmware` | ESP32-S3 ファームウェア（esp-idf-svc）。設定コンソール、USB ホスト（CDC-ACM、FTDI、CP210x、CH34x）、Wi-Fi、Tailscale ノード、TCP ブリッジ。 |
+| `hardware/case` | YD-ESP32-S3 用の 3D プリントケース。OpenSCAD のソースと、そのまま印刷できる STL（ピンヘッダの有無の 2 種類）がある（[README](hardware/case/README-ja.md)）。 |
 
 tsnode の内部は次のモジュールに分かれる。
 
