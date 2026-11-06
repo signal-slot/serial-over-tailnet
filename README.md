@@ -47,7 +47,7 @@ PSRAM is required: network thread stacks and TLS buffers live there.
 | WROOM-2 N16R8V, N32R8V | 16, 32 MB octal | 8 MB octal | `partitions.csv` | built, untested |
 | N4, N8, N16 (no PSRAM) | | none | | not supported |
 
-The WROOM-1U (external antenna) uses the same variants as the WROOM-1. The MINI-1 N4R2 matches `n4r2`.
+The MINI-1 N4R2 matches `n4r2`.
 
 To build a variant locally, point esp-idf-sys at its defaults file and pass the variant to the image script:
 
@@ -202,7 +202,7 @@ The ESP32-S3's host controller has eight pipes, one for control and two per clai
 Power the board through the COM-side USB port, from a PC or a USB charger.
 The native port is the USB host port for the target; the target's debug port is not expected to supply power.
 
-To supply 5 V from the native port, bridge the `USB-OTG` solder pad on the back of the board (present on many DevKitC-1-compatible boards with two USB-C ports; boards without it need their own way of feeding VBUS to the native port).
+To supply 5 V from the native port, bridge the `USB-OTG` solder pad on the back of the board.
 This ties the VBUS of the two USB-C connectors together, so after bridging it **never plug both ports into PCs at the same time**.
 For flashing and setup, connect the COM port to the PC; if you use the native port for that instead, connect only that one.
 In normal operation, connect the COM port to power and the native port to the target.
