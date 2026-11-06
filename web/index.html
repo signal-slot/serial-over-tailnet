@@ -63,12 +63,7 @@
     <select id="variant">
       <option value="n16r8">N16R8 (16 MB, 8 MB PSRAM)</option>
       <option value="n8r8">N8R8 (8 MB, 8 MB PSRAM)</option>
-      <option value="n4r8">N4R8 (4 MB, 8 MB PSRAM)</option>
-      <option value="n16r2">N16R2 (16 MB, 2 MB PSRAM)</option>
       <option value="n8r2">N8R2 (8 MB, 2 MB PSRAM)</option>
-      <option value="n4r2">N4R2 (4 MB, 2 MB PSRAM)</option>
-      <option value="n16r8v">WROOM-2 N16R8V (16 MB octal, 8 MB PSRAM)</option>
-      <option value="n32r8v">WROOM-2 N32R8V (32 MB octal, 8 MB PSRAM)</option>
     </select>
   </label>
   <esp-web-install-button id="install" manifest="manifest-n16r8.json"></esp-web-install-button>
@@ -108,9 +103,9 @@ const STRINGS = {
     unsupported: 'This browser has no WebSerial support. Open this page in Chrome or Edge on Windows, macOS, Linux or ChromeOS.',
     flash_title: '2. Flash',
     flash_1: 'Connect the <strong><code>COM</code></strong> port of the ESP32-S3 board (labelled COM or UART) to the PC. It flashes the board through the auto-download circuit and shows the boot log. The native USB port (labelled USB or OTG) works too, but after the <code>USB-OTG</code> pad is bridged, never have both ports on PCs at the same time.',
-    flash_module: 'Read the marking on the metal can of the module, such as <code>ESP32-S3-WROOM-1-N16R8</code>, and pick that variant below. N is the flash size, R the PSRAM size.',
+    flash_module: 'Read the marking on the metal can of the module, such as <code>ESP32-S3-N16R8</code>, and pick that variant below. N is the flash size, R the PSRAM size.',
     module: 'Module',
-    module_note: 'Modules without PSRAM (N4, N8, N16 with no R) are not supported. WROOM-1 N16R8 and N8R2 have been tested on hardware; the other variants, including WROOM-2, are built with the matching settings but unverified.',
+    module_note: 'Modules without PSRAM (N4, N8, N16 with no R) are not supported. Modules marked ESP32-S3-N16R8 and ESP32-S3-N8R2 have been tested on hardware; N8R8 is built with the matching settings but unverified.',
     flash_2: 'Press the button below and pick the <code>USB JTAG/serial debug unit</code> port in the dialog.',
     flash_3: 'Choose "Install". On a new board, tick "Erase device". It takes about a minute.',
     setup_title: '3. Set up',
@@ -122,7 +117,7 @@ const STRINGS = {
     wire_title: '4. Rewire',
     wire_2: 'Connect the COM-side USB to power (a PC or a charger) and the native port to the debug USB port of the target board.',
     wire_3: 'From any machine on the tailnet, <code>nc &lt;hostname&gt; 3593n</code> or <code>socat -,rawer,escape=0x1d TCP:&lt;hostname&gt;:3593n</code> opens the console, where n is the USB interface of the target: 0 for a plain CDC console, 1 for the Raspberry Pi Debug Probe, 3 for the Verdin console on a Toradex Dahlia. A client that opens with Telnet negotiation, such as pyserial&#39;s <code>rfc2217://</code> or esptool, gets an RFC 2217 session and sets the baud rate and DTR/RTS itself.',
-    wire_warning: 'After bridging the USB-OTG pad, never plug both USB ports into PCs at the same time: their 5 V lines are tied together.',
+    wire_warning: 'After bridging the USB-OTG pad, never plug both USB ports into PCs at the same time: the 5 V of the COM side is fed into the other port.',
     source: 'Source code and details:',
   },
   ja: {
@@ -137,9 +132,9 @@ const STRINGS = {
     unsupported: 'このブラウザは WebSerial に対応していません。Windows、macOS、Linux、ChromeOS の Chrome または Edge で開いてください。',
     flash_title: '2. 書き込む',
     flash_1: 'ESP32-S3 ボードの <strong><code>COM</code></strong> 側（ラベルは COM や UART）を PC につなぐ。自動ダウンロード回路で書き込め、起動ログも見える。native USB 側（ラベルは USB や OTG）でも書き込めるが、<code>USB-OTG</code> パッドを短絡した後は両方のポートを同時に PC へ挿さないこと。',
-    flash_module: 'モジュールの金属カバーの刻印（<code>ESP32-S3-WROOM-1-N16R8</code> など）を読み、下でその型番を選ぶ。N が flash、R が PSRAM の容量である。',
+    flash_module: 'モジュールの金属カバーの刻印（<code>ESP32-S3-N16R8</code> など）を読み、下でその型番を選ぶ。N が flash、R が PSRAM の容量である。',
     module: 'モジュール',
-    module_note: 'PSRAM のないモジュール（R の付かない N4、N8、N16）は対応していない。実機で確認したのは WROOM-1 の N16R8 と N8R2 で、WROOM-2 を含む他の型番は対応する設定でビルドしているが未確認である。',
+    module_note: 'PSRAM のないモジュール（R の付かない N4、N8、N16）は対応していない。実機で確認したのは刻印が ESP32-S3-N16R8 と ESP32-S3-N8R2 のモジュールで、N8R8 は対応する設定でビルドしているが未確認である。',
     flash_2: '下のボタンを押し、ダイアログで <code>USB JTAG/serial debug unit</code> のポートを選ぶ。',
     flash_3: '「Install」を選ぶ。初回は「Erase device」にチェックを入れる。1 分ほどで終わる。',
     setup_title: '3. 設定する',
@@ -151,7 +146,7 @@ const STRINGS = {
     wire_title: '4. つなぎ替える',
     wire_2: 'COM 側の USB を電源（PC か充電器）に、native 側を対象ボードのデバッグ用 USB につなぐ。',
     wire_3: 'Tailnet 上の端末から <code>nc &lt;hostname&gt; 3593n</code> か <code>socat -,rawer,escape=0x1d TCP:&lt;hostname&gt;:3593n</code> でコンソールが開く。n は対象の USB インターフェース番号で、普通の CDC コンソールは 0、Raspberry Pi Debug Probe は 1、Toradex Dahlia の Verdin コンソールは 3。pyserial の <code>rfc2217://</code> や esptool のように Telnet のネゴシエーションで始めるクライアントは RFC 2217 セッションになり、ボーレートや DTR/RTS をクライアント側で設定できる。',
-    wire_warning: 'USB-OTG パッドを短絡した後は、2 つの USB ポートを同時に PC へ挿してはいけません。両方の 5 V が直結されます。',
+    wire_warning: 'USB-OTG パッドを短絡した後は、2 つの USB ポートを同時に PC へ挿してはいけません。COM 側の 5 V がもう一方のポートへ出ます。',
     source: 'ソースコードと詳細:',
   },
   zh: {
@@ -166,9 +161,9 @@ const STRINGS = {
     unsupported: '此浏览器不支持 WebSerial。请在 Windows、macOS、Linux 或 ChromeOS 上用 Chrome 或 Edge 打开本页面。',
     flash_title: '2. 写入固件',
     flash_1: '将 ESP32-S3 开发板的 <strong><code>COM</code></strong> 口（标有 COM 或 UART）连接到电脑。它通过自动下载电路写入固件，并显示启动日志。原生 USB 口（标有 USB 或 OTG）也可以写入，但短接 <code>USB-OTG</code> 焊盘之后，两个口绝不能同时接电脑。',
-    flash_module: '查看模组金属屏蔽罩上的丝印（如 <code>ESP32-S3-WROOM-1-N16R8</code>），并在下方选择对应型号。N 表示 flash 容量，R 表示 PSRAM 容量。',
+    flash_module: '查看模组金属屏蔽罩上的丝印（如 <code>ESP32-S3-N16R8</code>），并在下方选择对应型号。N 表示 flash 容量，R 表示 PSRAM 容量。',
     module: '模组',
-    module_note: '不支持没有 PSRAM 的模组（不带 R 的 N4、N8、N16）。WROOM-1 N16R8 和 N8R2 经过实机验证，包括 WROOM-2 在内的其他型号按对应设置构建但未经验证。',
+    module_note: '不支持没有 PSRAM 的模组（不带 R 的 N4、N8、N16）。丝印为 ESP32-S3-N16R8 和 ESP32-S3-N8R2 的模组经过实机验证，N8R8 按对应设置构建但未经验证。',
     flash_2: '点击下方按钮，在对话框中选择 <code>USB JTAG/serial debug unit</code> 端口。',
     flash_3: '选择 "Install"。新板子请勾选 "Erase device"。大约需要一分钟。',
     setup_title: '3. 配置',
@@ -180,7 +175,7 @@ const STRINGS = {
     wire_title: '4. 重新接线',
     wire_2: '将 COM 侧 USB 接电源（电脑或充电器），将原生 USB 口接目标板的调试 USB 口。',
     wire_3: '在 tailnet 中的任意机器上执行 <code>nc &lt;hostname&gt; 3593n</code> 或 <code>socat -,rawer,escape=0x1d TCP:&lt;hostname&gt;:3593n</code> 即可打开控制台。n 是目标板的 USB 接口编号：普通 CDC 控制台为 0，Raspberry Pi Debug Probe 为 1，Toradex Dahlia 的 Verdin 控制台为 3。以 Telnet 协商开头的客户端（如 pyserial 的 <code>rfc2217://</code> 或 esptool）会进入 RFC 2217 会话，可自行设置波特率和 DTR/RTS。',
-    wire_warning: '短接 USB-OTG 焊盘后，切勿同时把两个 USB 口都接到电脑上：两路 5 V 是直接相连的。',
+    wire_warning: '短接 USB-OTG 焊盘后，切勿同时把两个 USB 口都接到电脑上：COM 口的 5 V 会输出到另一个口。',
     source: '源代码与详细说明:',
   },
   es: {
@@ -195,9 +190,9 @@ const STRINGS = {
     unsupported: 'Este navegador no admite WebSerial. Abre esta página en Chrome o Edge en Windows, macOS, Linux o ChromeOS.',
     flash_title: '2. Grabar',
     flash_1: 'Conecta al PC el puerto <strong><code>COM</code></strong> de la placa ESP32-S3 (marcado como COM o UART). Graba la placa a través del circuito de descarga automática y muestra el registro de arranque. El puerto USB nativo (marcado como USB u OTG) también sirve, pero una vez puenteado el pad <code>USB-OTG</code>, nunca conectes los dos puertos a PCs a la vez.',
-    flash_module: 'Lee la marca de la carcasa metálica del módulo, por ejemplo <code>ESP32-S3-WROOM-1-N16R8</code>, y elige esa variante abajo. N es el tamaño de la flash y R el de la PSRAM.',
+    flash_module: 'Lee la marca de la carcasa metálica del módulo, por ejemplo <code>ESP32-S3-N16R8</code>, y elige esa variante abajo. N es el tamaño de la flash y R el de la PSRAM.',
     module: 'Módulo',
-    module_note: 'Los módulos sin PSRAM (N4, N8, N16 sin R) no están soportados. El WROOM-1 N16R8 y el N8R2 se han probado en hardware; las demás variantes, incluido el WROOM-2, se compilan con los ajustes correspondientes pero no están verificadas.',
+    module_note: 'Los módulos sin PSRAM (N4, N8, N16 sin R) no están soportados. Los módulos marcados ESP32-S3-N16R8 y ESP32-S3-N8R2 se han probado en hardware; la N8R8 se compila con los ajustes correspondientes pero no está verificada.',
     flash_2: 'Pulsa el botón de abajo y elige el puerto <code>USB JTAG/serial debug unit</code> en el diálogo.',
     flash_3: 'Elige "Install". En una placa nueva, marca "Erase device". Tarda alrededor de un minuto.',
     setup_title: '3. Configurar',
@@ -209,7 +204,7 @@ const STRINGS = {
     wire_title: '4. Reconectar',
     wire_2: 'Conecta el USB del lado COM a la alimentación (un PC o un cargador) y el puerto nativo al puerto USB de depuración de la placa objetivo.',
     wire_3: 'Desde cualquier máquina de la tailnet, <code>nc &lt;hostname&gt; 3593n</code> o <code>socat -,rawer,escape=0x1d TCP:&lt;hostname&gt;:3593n</code> abre la consola; n es la interfaz USB de la placa: 0 para una consola CDC normal, 1 para la Raspberry Pi Debug Probe, 3 para la consola Verdin de una Toradex Dahlia. Un cliente que empieza con la negociación Telnet, como <code>rfc2217://</code> de pyserial o esptool, obtiene una sesión RFC 2217 y fija por sí mismo la velocidad y DTR/RTS.',
-    wire_warning: 'Tras puentear el pad USB-OTG, nunca conectes los dos puertos USB a ordenadores al mismo tiempo: sus líneas de 5 V están unidas.',
+    wire_warning: 'Tras puentear el pad USB-OTG, nunca conectes los dos puertos USB a ordenadores al mismo tiempo: los 5 V del lado COM salen por el otro puerto.',
     source: 'Código fuente y detalles:',
   },
 };

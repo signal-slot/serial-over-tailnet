@@ -6,24 +6,16 @@
 #   ESP_IDF_SDKCONFIG_DEFAULTS="sdkconfig.defaults;variants/n8r2.defaults" cargo build --release
 #   tools/mkimage.sh n8r2 [profile] [outdir]
 #
-# The variant name (n<flash MB>r<PSRAM MB>) selects the flash size and the
-# partition table; it must match the sdkconfig the firmware was built with.
+# The variant name (n<flash MB>r<PSRAM MB>) selects the flash size; it must
+# match the sdkconfig the firmware was built with.
 set -euo pipefail
 variant=${1:?variant such as n16r8}
 profile=${2:-release}
 out=${3:-dist/$variant}
 flash_mb=${variant#n}; flash_mb=${flash_mb%%r*}
-case "$flash_mb" in
-  4) partitions=partitions-4m.csv ;;
-  8|16|32) partitions=partitions.csv ;;
-  *) echo "unknown flash size in variant $variant" >&2; exit 1 ;;
-esac
-# Octal-flash modules (WROOM-2, "V" suffix) carry DOUT in the image header;
-# the bootloader switches to OPI itself.
-case "$variant" in
-  *v) flash_mode=dout ;;
-  *) flash_mode=dio ;;
-esac
+[ -f "variants/$variant.defaults" ] || { echo "unknown variant $variant (see variants/)" >&2; exit 1; }
+partitions=partitions.csv
+flash_mode=dio
 target=${CARGO_TARGET_DIR:-target}/xtensa-esp32s3-espidf/$profile
 py=$(ls -d .embuild/espressif/python_env/*/bin/python | head -1)
 idf=.embuild/espressif/esp-idf/v5.3.3

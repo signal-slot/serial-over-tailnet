@@ -37,17 +37,14 @@ Tailscale のノードとして必要な機能（制御プロトコル、WireGua
 flash の容量と PSRAM の方式はビルド時の固定設定なので、CI は ESP32-S3 モジュールの型番ごとにイメージを作る（`firmware/variants/`）。
 PSRAM は必須である。ネットワーク系スレッドのスタックと TLS のバッファを PSRAM に置いている。
 
-| 型番 | flash | PSRAM | パーティション表 | 状況 |
-| --- | --- | --- | --- | --- |
-| N16R8 | 16 MB | 8 MB Octal | `partitions.csv`（アプリ 6 MB） | 実機確認済み |
-| N8R8 | 8 MB | 8 MB Octal | `partitions.csv` | ビルドのみ、未確認 |
-| N4R8 | 4 MB | 8 MB Octal | `partitions-4m.csv`（アプリ 3 MB） | ビルドのみ、未確認 |
-| N8R2 | 8 MB | 2 MB Quad | `partitions.csv` | 実機確認済み |
-| N16R2、N4R2 | 16、4 MB | 2 MB Quad | 上と同じ | ビルドのみ、未確認 |
-| WROOM-2 N16R8V、N32R8V | 16、32 MB Octal | 8 MB Octal | `partitions.csv` | ビルドのみ、未確認 |
-| N4、N8、N16（PSRAM なし） | | なし | | 非対応 |
+| 型番 | flash | PSRAM | 状況 |
+| --- | --- | --- | --- |
+| N16R8 | 16 MB | 8 MB Octal | 実機確認済み |
+| N8R8 | 8 MB | 8 MB Octal | ビルドのみ、未確認 |
+| N8R2 | 8 MB | 2 MB Quad | 実機確認済み |
+| N4、N8、N16（PSRAM なし） | | なし | 非対応 |
 
-MINI-1 の N4R2 は `n4r2` に相当する。
+N16R8、N8R8、N8R2 は、YD-ESP32-S3 ボードにある型番である。
 
 手元で型番を指定してビルドするには、esp-idf-sys に型番の defaults ファイルを渡し、イメージ作成スクリプトにも型番を渡す。
 
@@ -101,7 +98,7 @@ Windows 10 以降、macOS、Linux、ChromeOS で動き、Firefox と Safari と�
 native 側でも書き込めて、端末を開くとすぐウィザードが始まるが、セットアップが終わるとポートは USB ホストになって見えなくなる。
 OS に COM ポートが見えないときは native 側を使う。
 
-ページではモジュールの金属カバーの刻印（`ESP32-S3-WROOM-1-N16R8` など）から型番を選ぶ。
+ページではモジュールの金属カバーの刻印（`ESP32-S3-N16R8` など）から型番を選ぶ。
 CI（GitHub Actions）は push のたびに全型番をビルドし、`v*` タグでは Release にも `usb-serial-over-tailscale-<型番>.bin`（bootloader、パーティション表、アプリを結合した 1 本）を添付する。
 結合したものは `esptool write_flash 0x0` で書けるが、NVS の領域も 0xFF で上書きするので設定と登録が消える。
 ページからの更新は 3 つの領域だけを書くので設定は残る。
@@ -205,7 +202,9 @@ PC でも USB 充電器でも構わない。
 native 側は USB ホストとして対象につなぐポートで、対象のデバッグポートから電源は来ない前提である。
 
 native 側から 5 V を出すには、裏面の `USB-OTG` パッドを短絡する。
-これは 2 つの USB-C コネクタの VBUS を直結するので、短絡後は**両方を同時に PC へ挿さない**。
+このパッドは、ボードの 5 V と native 側の間にあるダイオードを迂回する。
+短絡すると、COM 側の 5 V がダイオード 1 つ分だけ下がって native 側へ出る。
+短絡後は**両方を同時に PC へ挿さない**。COM 側の 5 V が native 側の PC へ流れ込む。
 書き込みとセットアップは COM 側を PC につなぐ。代わりに native 側を使うなら、そちらだけを PC につなぐ。
 通常運用は COM 側を電源に、native 側を対象につなぐ。
 対象が CDC-ACM か FTDI などのブリッジチップであれば、そのチップは通常バスパワーで動くので、この 5 V が必要である。
@@ -239,7 +238,7 @@ cargo run --release      # espflash flash --monitor --flash-size 16mb --partitio
 `~/export-esp.sh` は source しない。
 gcc と clang は esp-idf-sys が `.embuild/` に導入したものを使い、espup の xtensa gcc が PATH の先頭にあるとリンクに失敗する。
 
-パーティション表は `firmware/partitions.csv`（factory 6 MB、flash 8 MB と 16 MB 用）と `firmware/partitions-4m.csv`（3 MB、flash 4 MB 用）である。
+パーティション表は `firmware/partitions.csv`（factory 6 MB）である。
 esptool で書く場合は `tools/mkimage.sh <型番> release` で `dist/<型番>/` にバイナリを作る。
 
 ```bash

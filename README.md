@@ -37,17 +37,14 @@ Not verified:
 Flash size and PSRAM mode are build-time settings, so CI builds one image per ESP32-S3 module variant (`firmware/variants/`).
 PSRAM is required: network thread stacks and TLS buffers live there.
 
-| Variant | Flash | PSRAM | Partition table | Status |
-| --- | --- | --- | --- | --- |
-| N16R8 | 16 MB | 8 MB octal | `partitions.csv` (6 MB app) | tested |
-| N8R8 | 8 MB | 8 MB octal | `partitions.csv` | built, untested |
-| N4R8 | 4 MB | 8 MB octal | `partitions-4m.csv` (3 MB app) | built, untested |
-| N8R2 | 8 MB | 2 MB quad | `partitions.csv` | tested |
-| N16R2, N4R2 | 16, 4 MB | 2 MB quad | as above | built, untested |
-| WROOM-2 N16R8V, N32R8V | 16, 32 MB octal | 8 MB octal | `partitions.csv` | built, untested |
-| N4, N8, N16 (no PSRAM) | | none | | not supported |
+| Variant | Flash | PSRAM | Status |
+| --- | --- | --- | --- |
+| N16R8 | 16 MB | 8 MB octal | tested |
+| N8R8 | 8 MB | 8 MB octal | built, untested |
+| N8R2 | 8 MB | 2 MB quad | tested |
+| N4, N8, N16 (no PSRAM) | | none | not supported |
 
-The MINI-1 N4R2 matches `n4r2`.
+N16R8, N8R8 and N8R2 are the variants found on the YD-ESP32-S3 board.
 
 To build a variant locally, point esp-idf-sys at its defaults file and pass the variant to the image script:
 
@@ -101,7 +98,7 @@ Connect the COM port: it flashes through the board's auto-download circuit, carr
 The native USB port works too and starts the wizard as soon as a terminal opens, but it disappears when setup completes and the port becomes the USB host.
 If the operating system does not list the COM port, use the native port instead.
 
-Pick the module variant on the page from the marking on the module's metal can (for example `ESP32-S3-WROOM-1-N16R8`).
+Pick the module variant on the page from the marking on the module's metal can (for example `ESP32-S3-N16R8`).
 CI (GitHub Actions) builds every variant on each push. Tags matching `v*` also attach `usb-serial-over-tailscale-<variant>.bin` (bootloader, partition table and app merged into one file) to a release.
 The merged file can be written with `esptool write_flash 0x0`, but it also overwrites the NVS area with 0xFF, which erases the configuration and registration.
 Updates from the page write only the three regions and keep the configuration.
@@ -203,7 +200,7 @@ Power the board through the COM-side USB port, from a PC or a USB charger.
 The native port is the USB host port for the target; the target's debug port is not expected to supply power.
 
 To supply 5 V from the native port, bridge the `USB-OTG` solder pad on the back of the board.
-This ties the VBUS of the two USB-C connectors together, so after bridging it **never plug both ports into PCs at the same time**.
+The pad bypasses the diode between the board's 5 V and the native port, so the 5 V of the COM side comes out of the native port (one diode drop lower). After bridging it **never plug both ports into PCs at the same time**: the COM side would feed the PC on the native port.
 For flashing and setup, connect the COM port to the PC; if you use the native port for that instead, connect only that one.
 In normal operation, connect the COM port to power and the native port to the target.
 If the target is a CDC-ACM or FTDI-style bridge chip, that chip is usually bus-powered and needs this 5 V.
@@ -237,7 +234,7 @@ cargo run --release      # espflash flash --monitor --flash-size 16mb --partitio
 Do not source `~/export-esp.sh`.
 gcc and clang come from what esp-idf-sys installs into `.embuild/`; with espup's Xtensa gcc first on PATH the link fails.
 
-The partition tables are `firmware/partitions.csv` (6 MB factory app, for 8 and 16 MB flash) and `firmware/partitions-4m.csv` (3 MB, for 4 MB flash).
+The partition table is `firmware/partitions.csv` (6 MB factory app).
 To flash with esptool, build the binaries into `dist/<variant>/` with `tools/mkimage.sh <variant> release`.
 
 ```bash

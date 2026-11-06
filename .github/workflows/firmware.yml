@@ -17,10 +17,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        # ESP32-S3-WROOM-1(U) variants n<flash MB>r<PSRAM MB>, and WROOM-2
-        # (octal flash, "v" suffix). PSRAM is required; flash size, flash
-        # mode and PSRAM mode are build-time settings.
-        variant: [n16r8, n8r8, n4r8, n16r2, n8r2, n4r2, n16r8v, n32r8v]
+        # Module variants n<flash MB>r<PSRAM MB>: the ones the YD-ESP32-S3
+        # board is made with. PSRAM is required; flash size and PSRAM mode
+        # are build-time settings.
+        variant: [n16r8, n8r8, n8r2]
     env:
       ESP_IDF_SDKCONFIG_DEFAULTS: "sdkconfig.defaults;variants/${{ matrix.variant }}.defaults"
     steps:
