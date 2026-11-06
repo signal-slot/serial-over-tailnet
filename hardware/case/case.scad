@@ -25,7 +25,7 @@ pcb_w = 27.94;
 pcb_l = 57.15;
 pcb_t = 1.6;
 ant_l = 63.39;      // USB-C edge to the tip of the module antenna overhang
-comp_h = 3.4;       // tallest part above the PCB (USB-C 3.26, WROOM-1 3.1)
+comp_h = 3.4;       // tallest part above the PCB (USB-C 3.26, module 3.1)
 
 /* [Pin headers] */
 pin_rows_x = [1.27, 26.67];
