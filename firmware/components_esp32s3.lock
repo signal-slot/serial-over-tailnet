@@ -26,7 +26,7 @@ dependencies:
   idf:
     source:
       type: idf
-    version: 5.3.3
+    version: 5.5.5
 direct_dependencies:
 - espressif/usb_host_cdc_acm
 manifest_hash: c9b42f0db2d6e7c24c76d3b1fb6b7e1147653f09ff3dd7f6f7b84f50142fe118
