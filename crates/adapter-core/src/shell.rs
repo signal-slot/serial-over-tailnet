@@ -66,6 +66,9 @@ pub struct StatusSnapshot {
     /// Why the chip last reset, as the platform reports it ("power-on",
     /// "brownout", ...). Empty when the platform cannot tell.
     pub last_reset: String,
+    /// What the board's own circuitry reports (which port powers it, the
+    /// target's 5 V, ...). Empty on a board without any.
+    pub board: String,
 }
 
 /// Device actions the shell can perform. Methods take `&self`; implementors
@@ -390,6 +393,9 @@ impl<'a, C: Console, P: Platform> Shell<'a, C, P> {
         self.line(&format!("DERP:      {}", st.derp));
         self.line(&format!("Peers:     {}", st.peers));
         self.line(&format!("USB:       {}", st.usb));
+        if !st.board.is_empty() {
+            self.line(&format!("Board:     {}", st.board));
+        }
         self.line(&format!("Memory:    {}", st.heap));
         if !st.last_reset.is_empty() {
             self.line(&format!("Reset:     {}", st.last_reset));

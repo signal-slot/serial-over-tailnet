@@ -6,15 +6,21 @@
 #   ESP_IDF_SDKCONFIG_DEFAULTS="sdkconfig.defaults;variants/n8r2.defaults" cargo build --release
 #   tools/mkimage.sh n8r2 [profile] [outdir]
 #
-# The variant name (n<flash MB>r<PSRAM MB>) selects the flash size; it must
-# match the sdkconfig the firmware was built with.
+# The variant's defaults file (variants/<variant>.defaults) gives the flash
+# size, which picks the partition table; the firmware must have been built
+# with the same file.
 set -euo pipefail
 variant=${1:?variant such as n16r8}
 profile=${2:-release}
 out=${3:-dist/$variant}
-flash_mb=${variant#n}; flash_mb=${flash_mb%%r*}
-[ -f "variants/$variant.defaults" ] || { echo "unknown variant $variant (see variants/)" >&2; exit 1; }
-partitions=partitions.csv
+defaults=variants/$variant.defaults
+[ -f "$defaults" ] || { echo "unknown variant $variant (see variants/)" >&2; exit 1; }
+flash_mb=$(sed -n 's/^CONFIG_ESPTOOLPY_FLASHSIZE="\([0-9]*\)MB"/\1/p' "$defaults")
+[ -n "$flash_mb" ] || { echo "$defaults does not set CONFIG_ESPTOOLPY_FLASHSIZE" >&2; exit 1; }
+case $flash_mb in
+  4) partitions=partitions-4m.csv ;;
+  *) partitions=partitions.csv ;;
+esac
 flash_mode=dio
 target=${CARGO_TARGET_DIR:-target}/xtensa-esp32s3-espidf/$profile
 py=$(ls -d .embuild/espressif/python_env/*/bin/python | head -1)

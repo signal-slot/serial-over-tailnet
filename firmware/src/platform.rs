@@ -19,6 +19,7 @@ pub struct EspPlatform {
     /// The USB host, set once it is started (normal mode only).
     pub usb: OnceLock<UsbHost>,
     pub setup_mode: bool,
+    pub board: crate::board::Board,
 }
 
 impl EspPlatform {
@@ -115,6 +116,7 @@ impl Platform for EspPlatform {
             },
             heap,
             last_reset: last_reset().describe(),
+            board: self.board.describe(),
         }
     }
 

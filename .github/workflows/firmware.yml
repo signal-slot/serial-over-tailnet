@@ -19,8 +19,13 @@ jobs:
       matrix:
         # Module variants n<flash MB>r<PSRAM MB>: the ones the YD-ESP32-S3
         # board is made with. PSRAM is required; flash size and PSRAM mode
-        # are build-time settings.
-        variant: [n16r8, n8r8, n8r2]
+        # are build-time settings. `adapter` is the board in hardware/board;
+        # it is built here but not offered by the installer until a board
+        # has been made and tested.
+        variant: [n16r8, n8r8, n8r2, adapter]
+        include:
+          - variant: adapter
+            features: --features board-adapter
     env:
       ESP_IDF_SDKCONFIG_DEFAULTS: "sdkconfig.defaults;variants/${{ matrix.variant }}.defaults"
     steps:
@@ -66,7 +71,7 @@ jobs:
 
       - name: Build
         working-directory: firmware
-        run: cargo build --release
+        run: cargo build --release ${{ matrix.features }}
 
       - name: Flash image
         working-directory: firmware
@@ -92,6 +97,7 @@ jobs:
           mkdir -p site/firmware
           cp web/* site/
           rm site/manifest.json
+          rm -rf dist/firmware-adapter   # untested board: not on the site or in releases yet
           for d in dist/firmware-*; do
             v=${d#dist/firmware-}
             mkdir -p "site/firmware/$v"

@@ -1,4 +1,5 @@
-//! usb-serial-over-tailscale firmware for ESP32-S3 N16R8.
+//! usb-serial-over-tailscale firmware for the ESP32-S3 (see `board` for the
+//! boards it runs on).
 //!
 //! Boot flow:
 //! - Setup Mode (BOOT button held, or Wi-Fi/Tailscale not yet set up): the
@@ -10,12 +11,15 @@
 //!   stays available on UART0 (`status`, `setup`, ...).
 #![allow(unexpected_cfgs)]
 
+mod board;
 mod bridge;
 mod button;
 mod console;
 mod nvs_store;
 mod platform;
 mod tls;
+#[cfg(feature = "board-adapter")]
+mod uart_link;
 mod usb_host;
 mod wifi;
 
@@ -33,6 +37,11 @@ use std::time::Duration;
 
 pub const FIRMWARE_VERSION: &str = env!("CARGO_PKG_VERSION");
 pub const DEFAULT_BAUD: u32 = 115_200;
+/// The adapter board's UART header is bridged on the first port plus this,
+/// above the interfaces a USB device can have (an FT4232H has 0 to 3; a
+/// composite device with CDC functions has 0, 2, 4, ...).
+#[cfg(feature = "board-adapter")]
+pub const UART_HEADER_INTERFACE: u16 = 8;
 
 fn main() -> Result<()> {
     esp_idf_svc::sys::link_patches();
@@ -79,6 +88,31 @@ fn main() -> Result<()> {
         }
     );
 
+    // The board's own circuitry: which port is the PC's, where the USB goes.
+    #[cfg(feature = "board-adapter")]
+    let board = board::Board::init(
+        board::Pins {
+            mux_sel: peripherals.pins.gpio21,
+            vbus_en_a: peripherals.pins.gpio6,
+            vbus_en_b: peripherals.pins.gpio40,
+            fault_a: peripherals.pins.gpio5,
+            fault_b: peripherals.pins.gpio39,
+            id_a: peripherals.pins.gpio4,
+            id_b: peripherals.pins.gpio38,
+            led: peripherals.pins.gpio2,
+            vref_sense: peripherals.pins.gpio1,
+            adc1: peripherals.adc1,
+            pwr_st: peripherals.pins.gpio7,
+            i2c0: peripherals.i2c0,
+            sda: peripherals.pins.gpio8,
+            scl: peripherals.pins.gpio9,
+        },
+        setup_mode,
+    )
+    .context("board")?;
+    #[cfg(not(feature = "board-adapter"))]
+    let board = board::Board::init(setup_mode).context("board")?;
+
     let wifi =
         wifi::WifiManager::new(peripherals.modem, sysloop.clone(), nvs_part).context("wifi")?;
     let _sntp = esp_idf_svc::sntp::EspSntp::new_default().ok();
@@ -108,6 +142,7 @@ fn main() -> Result<()> {
         node: std::sync::Mutex::new(None),
         usb: OnceLock::new(),
         setup_mode,
+        board,
     });
 
     if let Some(cfg) = &config {
@@ -129,6 +164,22 @@ fn main() -> Result<()> {
                 .context("node")?;
         }
     }
+
+    // The adapter board's UART header. Set up in both modes, so that its TX
+    // line idles high instead of floating into the target's RX.
+    #[cfg(feature = "board-adapter")]
+    let mut uart_header = Some(
+        uart_link::UartSerial::new(
+            peripherals.uart1,
+            peripherals.pins.gpio33,
+            peripherals.pins.gpio34,
+            config
+                .as_ref()
+                .and_then(|c| c.baud_rate)
+                .unwrap_or(DEFAULT_BAUD),
+        )
+        .context("uart header")?,
+    );
 
     // USB host: every serial interface of the target gets a bridge on
     // `port + interface` the first time the device shows it.
@@ -166,6 +217,28 @@ fn main() -> Result<()> {
         .context("usb host")?;
         if platform.usb.set(host).is_err() {
             warn!("usb: host started twice");
+        }
+
+        // The adapter board's UART header, bridged like another interface.
+        #[cfg(feature = "board-adapter")]
+        {
+            let port = base_port + UART_HEADER_INTERFACE;
+            let serial = uart_header
+                .take()
+                .expect("the UART header is set up in both modes");
+            let node = platform.node().expect("node started in normal mode");
+            platform::spawn_thread(
+                "bridge-uart",
+                8 * 1024,
+                true,
+                Box::new(move || {
+                    if let Err(e) = bridge::run(node, serial, port) {
+                        warn!("bridge: UART header on port {port} stopped: {e:#}");
+                    }
+                }),
+            )
+            .map_err(|e| anyhow::anyhow!(e))
+            .context("uart bridge")?;
         }
     }
 
@@ -229,8 +302,18 @@ fn spawn_supervisor(platform: Arc<platform::EspPlatform>) {
                 tick += 1;
                 if tick % 6 == 0 {
                     info!(
-                        "status: wifi={} node={:?} derp={} peers={} usb={} heap={}",
-                        s.wifi, s.node, s.derp, s.peers, s.usb, s.heap
+                        "status: wifi={} node={:?} derp={} peers={} usb={} heap={}{}",
+                        s.wifi,
+                        s.node,
+                        s.derp,
+                        s.peers,
+                        s.usb,
+                        s.heap,
+                        if s.board.is_empty() {
+                            String::new()
+                        } else {
+                            format!(" board={}", s.board)
+                        }
                     );
                 }
             }

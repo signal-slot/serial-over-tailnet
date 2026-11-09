@@ -13,9 +13,13 @@
 //! USB interface is claimed at the first session and kept until the device
 //! leaves, so that the device's data toggles stay in step with the host's
 //! pipes (see `usb_host`).
+//!
+//! The channel is anything that implements [`Serial`]: an interface of the
+//! USB device, or the adapter board's UART header (`uart_link`).
 
 use crate::usb_host::{OpenError, UsbSerial};
 use adapter_core::rfc2217::{Command, Purge, Session};
+use adapter_core::usbserial::LineSettings;
 use anyhow::{anyhow, Result};
 use log::{info, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -25,7 +29,57 @@ use std::time::Duration;
 use tsnode::netstack::TcpStream;
 use tsnode::node::Node;
 
-pub fn run(node: Node, serial: UsbSerial, port: u16) -> Result<()> {
+/// A serial channel a bridge can serve. The methods are those of
+/// [`UsbSerial`]; see there for what each does.
+pub trait Serial: Clone + Send + Sync + 'static {
+    fn open(&self) -> std::result::Result<(), OpenError>;
+    fn close(&self);
+    fn line(&self) -> LineSettings;
+    fn set_line(&self, line: LineSettings) -> Result<()>;
+    /// DTR and RTS.
+    fn modem(&self) -> (bool, bool);
+    fn set_modem(&self, dtr: bool, rts: bool) -> Result<()>;
+    fn set_break(&self, on: bool) -> Result<()>;
+    fn purge_rx(&self);
+    /// Bytes from the target; 0 on timeout.
+    fn read(&self, buf: &mut [u8], timeout: Duration) -> usize;
+    fn write(&self, data: &[u8]) -> Result<()>;
+}
+
+impl Serial for UsbSerial {
+    fn open(&self) -> std::result::Result<(), OpenError> {
+        UsbSerial::open(self)
+    }
+    fn close(&self) {
+        UsbSerial::close(self)
+    }
+    fn line(&self) -> LineSettings {
+        UsbSerial::line(self)
+    }
+    fn set_line(&self, line: LineSettings) -> Result<()> {
+        UsbSerial::set_line(self, line)
+    }
+    fn modem(&self) -> (bool, bool) {
+        UsbSerial::modem(self)
+    }
+    fn set_modem(&self, dtr: bool, rts: bool) -> Result<()> {
+        UsbSerial::set_modem(self, dtr, rts)
+    }
+    fn set_break(&self, on: bool) -> Result<()> {
+        UsbSerial::set_break(self, on)
+    }
+    fn purge_rx(&self) {
+        UsbSerial::purge_rx(self)
+    }
+    fn read(&self, buf: &mut [u8], timeout: Duration) -> usize {
+        UsbSerial::read(self, buf, timeout)
+    }
+    fn write(&self, data: &[u8]) -> Result<()> {
+        UsbSerial::write(self, data)
+    }
+}
+
+pub fn run<S: Serial>(node: Node, serial: S, port: u16) -> Result<()> {
     let listener = node.listen(port);
     info!("bridge: listening on tailnet port {port}");
     let busy = Arc::new(AtomicBool::new(false));
@@ -60,7 +114,7 @@ pub fn run(node: Node, serial: UsbSerial, port: u16) -> Result<()> {
 }
 
 /// Runs one client session until either side closes.
-fn serve(serial: &UsbSerial, conn: TcpStream, port: u16) -> Result<()> {
+fn serve<S: Serial>(serial: &S, conn: TcpStream, port: u16) -> Result<()> {
     let peer = conn.peer_addr();
     info!("bridge: client connected from {peer} on {port}");
     match serial.open() {
@@ -68,7 +122,7 @@ fn serve(serial: &UsbSerial, conn: TcpStream, port: u16) -> Result<()> {
         Err(OpenError::NoDevice) => info!("bridge: {peer} on {port} waits for a device"),
         Err(OpenError::Failed(e)) => {
             warn!("bridge: rejecting {peer} on {port}: {e}");
-            let _ = conn.write_all(format!("usb: cannot open the interface: {e}\r\n").as_bytes());
+            let _ = conn.write_all(format!("serial: cannot open the channel: {e}\r\n").as_bytes());
             conn.close();
             return Ok(());
         }
@@ -171,7 +225,7 @@ fn serve(serial: &UsbSerial, conn: TcpStream, port: u16) -> Result<()> {
 
 /// Applies one RFC 2217 request to the serial port; `false` when the port
 /// refused it, which the client is then told.
-fn apply(serial: &UsbSerial, command: Command, peer: std::net::SocketAddr, port: u16) -> bool {
+fn apply<S: Serial>(serial: &S, command: Command, peer: std::net::SocketAddr, port: u16) -> bool {
     let result = match command {
         Command::Baud(baud) => {
             let mut line = serial.line();
