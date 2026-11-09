@@ -12,6 +12,6 @@ build-std = ["std", "panic_abort"]
 [env]
 MCU = "esp32s3"
 # ESP-IDF is downloaded by esp-idf-sys into .embuild/ on first build.
-ESP_IDF_VERSION = "v5.3.3"
+ESP_IDF_VERSION = "v5.5.5"
 # Keep the toolchain download inside the project (no ~/.espressif pollution).
 ESP_IDF_TOOLS_INSTALL_DIR = "workspace"

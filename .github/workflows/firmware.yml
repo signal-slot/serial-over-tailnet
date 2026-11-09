@@ -13,9 +13,7 @@ env:
 
 jobs:
   build:
-    # 24.04, not latest: ESP-IDF's esp-clang needs libxml2.so.2, which Ubuntu 26.04 no
-    # longer ships.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
@@ -37,7 +35,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y git wget flex bison gperf python3 python3-pip python3-venv \
-            cmake ninja-build ccache libffi-dev libssl-dev dfu-util libusb-1.0-0 libxml2
+            cmake ninja-build ccache libffi-dev libssl-dev dfu-util libusb-1.0-0
 
       - name: Cache Rust esp toolchain and ldproxy
         id: cache-toolchain
@@ -50,7 +48,7 @@ jobs:
 
       # espup installs the `esp` rustup toolchain (Xtensa-enabled rustc) and
       # its gcc. The export script it writes is deliberately NOT sourced:
-      # esp-idf-sys downloads the gcc that matches ESP-IDF v5.3.3 itself, and
+      # esp-idf-sys downloads the gcc that matches the pinned ESP-IDF itself, and
       # a different Xtensa gcc first on PATH makes the link fail on libnosys.
       - name: Install esp toolchain
         if: steps.cache-toolchain.outputs.cache-hit != 'true'

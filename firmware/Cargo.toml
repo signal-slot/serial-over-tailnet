@@ -25,9 +25,9 @@ default = []
 board-adapter = []
 
 [dependencies]
-esp-idf-svc = { version = "0.52", features = ["std", "alloc", "binstart", "critical-section"] }
-esp-idf-sys = "0.37"
-esp-idf-hal = "0.46"
+esp-idf-svc = { version = "0.53", features = ["std", "alloc", "binstart", "critical-section"] }
+esp-idf-sys = "0.38"
+esp-idf-hal = "0.47"
 tsnode = { path = "../crates/tsnode" }
 adapter-core = { path = "../crates/adapter-core" }
 log = "0.4"
