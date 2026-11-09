@@ -118,8 +118,11 @@ jobs:
         with:
           files: dist/firmware-*/usb-serial-over-tailscale-*.bin
 
+  # Deploys the installer site. Off while the repository is private (GitHub Pages is
+  # not available to it then): set the repository variable DEPLOY_PAGES to "true"
+  # after making the repository public and enabling Pages.
   pages:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' && vars.DEPLOY_PAGES == 'true'
     needs: site
     runs-on: ubuntu-latest
     permissions:
