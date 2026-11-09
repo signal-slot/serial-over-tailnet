@@ -23,8 +23,14 @@ case $flash_mb in
 esac
 flash_mode=dio
 target=${CARGO_TARGET_DIR:-target}/xtensa-esp32s3-espidf/$profile
-py=$(ls -d .embuild/espressif/python_env/*/bin/python | head -1)
-idf=.embuild/espressif/esp-idf/v5.3.3
+# The ESP-IDF the firmware was built with (.cargo/config.toml); its Python environment
+# is named after the major.minor version. Older ones may still be around in .embuild.
+idf_version=$(sed -n 's/^ESP_IDF_VERSION = "\(.*\)"/\1/p' .cargo/config.toml)
+[ -n "$idf_version" ] || { echo ".cargo/config.toml does not set ESP_IDF_VERSION" >&2; exit 1; }
+idf=.embuild/espressif/esp-idf/$idf_version
+short=${idf_version#v}; short=${short%.*}
+py=$(ls -d ".embuild/espressif/python_env/idf${short}_py"*"_env/bin/python" | head -1)
+[ -x "$py" ] || { echo "no Python environment for ESP-IDF $idf_version in .embuild" >&2; exit 1; }
 mkdir -p "$out"
 "$py" "$idf/components/partition_table/gen_esp32part.py" "$partitions" "$out/partition-table.bin" >/dev/null
 "$py" -m esptool --chip esp32s3 elf2image --flash_mode "$flash_mode" --flash_freq 80m --flash_size "${flash_mb}MB" \
