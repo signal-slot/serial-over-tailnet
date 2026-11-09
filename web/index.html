@@ -44,6 +44,7 @@
 <h2 data-i18n="hw_title"></h2>
 <ol>
   <li data-i18n-html="hw_1"></li>
+  <li data-i18n-html="hw_cert"></li>
   <li data-i18n-html="hw_2"></li>
   <li data-i18n-html="hw_3"></li>
 </ol>
@@ -96,7 +97,8 @@ const STRINGS = {
     hw_3: 'Remember which port is which: <strong><code>COM</code> = 5 V power in</strong> (a charger or a PC), <strong><code>USB</code> = the SBC</strong> (the target\'s debug USB port). For flashing and setup, <code>COM</code> goes to the PC; <code>USB</code> can stay on the SBC.',
     pad_caption: 'The USB-OTG pad on the back of the board, before bridging. Join the two halves with a blob of solder.',
     hw_title: '1. Prepare the board (soldering required)',
-    hw_1: 'You need an ESP32-S3 board with PSRAM and two USB-C ports (COM and native USB). Turn it over and find the <code>USB-OTG</code> solder pad.',
+    hw_1: 'Buy the <a href="https://www.aliexpress.com/item/1005004025123046.html"><strong>YD-ESP32-S3</strong> from VCC-GND Studio (its page on AliExpress)</a>. On that page choose <strong>N16R8</strong> or <strong>N8R2</strong>: those two are supported. The board has two USB-C ports, labelled <code>COM</code> and <code>USB</code> (<a href="https://github.com/vcc-gnd/YD-ESP32-S3">photos and documents from its maker</a>). When it arrives, turn it over and find the <code>USB-OTG</code> solder pad.',
+    hw_cert: "<strong>A note on radio certification.</strong> The YD-ESP32-S3 is a good, inexpensive board. Its Wi-Fi module is not one of Espressif's certified modules, though: it has no Japanese 技適, and we have not found a radio certification for it elsewhere. Whether that matters depends on where you are, so please check the rules that apply to you. In Japan the board cannot be used; for Japan we are making a board around the certified ESP32-S3-MINI-1 module (see <code>hardware/board</code> in the repository).",
     hw_2: '<strong>Short the <code>USB-OTG</code> pad with solder.</strong> This is required: it feeds 5 V from the board to the target\'s USB port. Without it the target chip never powers up and nothing is detected.',
     intro: 'Flash an ESP32-S3 so that it bridges the USB serial console of a target board over Tailscale. Nothing to install: this page and a USB cable are enough.',
     version: 'Version:',
@@ -105,7 +107,7 @@ const STRINGS = {
     flash_1: 'Connect the <strong><code>COM</code></strong> port of the ESP32-S3 board (labelled COM or UART) to the PC. It flashes the board through the auto-download circuit and shows the boot log. The native USB port (labelled USB or OTG) works too, but after the <code>USB-OTG</code> pad is bridged, never have both ports on PCs at the same time.',
     flash_module: 'Read the marking on the metal can of the module, such as <code>ESP32-S3-N16R8</code>, and pick that variant below. N is the flash size, R the PSRAM size.',
     module: 'Module',
-    module_note: 'Modules without PSRAM (N4, N8, N16 with no R) are not supported. Modules marked ESP32-S3-N16R8 and ESP32-S3-N8R2 have been tested on hardware; N8R8 is built with the matching settings but unverified.',
+    module_note: 'Modules without PSRAM (N4, N8, N16 with no R) are not supported. Modules marked ESP32-S3-N16R8 and ESP32-S3-N8R2 are the supported variants; N8R8 is built with the matching settings.',
     flash_2: 'Press the button below and pick the <code>USB JTAG/serial debug unit</code> port in the dialog.',
     flash_3: 'Choose "Install". On a new board, tick "Erase device". It takes about a minute.',
     setup_title: '3. Set up',
@@ -125,7 +127,8 @@ const STRINGS = {
     hw_3: 'ポートの役割を覚えておく。<strong><code>COM</code> = 5 V の給電</strong>（充電器か PC）、<strong><code>USB</code> = SBC</strong>（対象のデバッグ用 USB ポート）。書き込みと設定は <code>COM</code> を PC につないで行う。<code>USB</code> は SBC につないだままでよい。',
     pad_caption: '裏面の USB-OTG パッド（短絡前）。2 つの半分をはんだでつなぐ。',
     hw_title: '1. ボードを準備する（はんだ付けが要る）',
-    hw_1: 'PSRAM 付きで USB-C が 2 つ（COM と native USB）ある ESP32-S3 ボードを用意する。裏返して <code>USB-OTG</code> のはんだパッドを探す。',
+    hw_1: '<a href="https://ja.aliexpress.com/item/1005004025123046.html">VCC-GND Studio の <strong>YD-ESP32-S3</strong>（AliExpress の商品ページ）</a>を買う。商品ページの選択肢から <strong>N16R8</strong> か <strong>N8R2</strong> を選ぶ。この 2 つに対応している。ボードには USB-C が 2 つあり、<code>COM</code> と <code>USB</code> と書いてある（<a href="https://github.com/vcc-gnd/YD-ESP32-S3">メーカーの写真と資料</a>）。届いたら裏返して <code>USB-OTG</code> のはんだパッドを探す。',
+    hw_cert: '<strong>無線の認証についてのお知らせ。</strong>YD-ESP32-S3 は安くてよいボードです。ただし、載っている Wi-Fi モジュールは Espressif の認証済みモジュールではなく、技適を取得していません。ほかの国の無線認証も見つかっていません。問題になるかどうかは国によるので、お住まいの国の規則を確かめてください。日本ではこのボードは使えません。日本向けには、認証済みの ESP32-S3-MINI-1 モジュールを使う基板を作っています（リポジトリの <code>hardware/board</code>）。',
     hw_2: '<strong><code>USB-OTG</code> パッドをはんだで短絡する。</strong>これは必須である。ボードから対象の USB ポートへ 5 V を送るためのもので、短絡しないと対象のチップに電源が入らず、何も検出されない。',
     intro: 'ESP32-S3 に書き込んで、対象ボードの USB シリアルコンソールを Tailscale 経由で使えるようにします。ソフトウェアの導入は不要で、このページと USB ケーブルだけで完了します。',
     version: 'バージョン:',
@@ -134,7 +137,7 @@ const STRINGS = {
     flash_1: 'ESP32-S3 ボードの <strong><code>COM</code></strong> 側（ラベルは COM や UART）を PC につなぐ。自動ダウンロード回路で書き込め、起動ログも見える。native USB 側（ラベルは USB や OTG）でも書き込めるが、<code>USB-OTG</code> パッドを短絡した後は両方のポートを同時に PC へ挿さないこと。',
     flash_module: 'モジュールの金属カバーの刻印（<code>ESP32-S3-N16R8</code> など）を読み、下でその型番を選ぶ。N が flash、R が PSRAM の容量である。',
     module: 'モジュール',
-    module_note: 'PSRAM のないモジュール（R の付かない N4、N8、N16）は対応していない。実機で確認したのは刻印が ESP32-S3-N16R8 と ESP32-S3-N8R2 のモジュールで、N8R8 は対応する設定でビルドしているが未確認である。',
+    module_note: 'PSRAM のないモジュール（R の付かない N4、N8、N16）は対応していない。対応しているのは刻印が ESP32-S3-N16R8 と ESP32-S3-N8R2 のモジュールで、N8R8 は対応する設定でビルドしている。',
     flash_2: '下のボタンを押し、ダイアログで <code>USB JTAG/serial debug unit</code> のポートを選ぶ。',
     flash_3: '「Install」を選ぶ。初回は「Erase device」にチェックを入れる。1 分ほどで終わる。',
     setup_title: '3. 設定する',
@@ -154,7 +157,8 @@ const STRINGS = {
     hw_3: '记住两个口的用途：<strong><code>COM</code> = 5 V 供电</strong>（充电器或电脑），<strong><code>USB</code> = SBC</strong>（目标板的调试 USB 口）。写入固件和配置时，把 <code>COM</code> 接到电脑；<code>USB</code> 可以继续接在 SBC 上。',
     pad_caption: '开发板背面的 USB-OTG 焊盘（短接前）。用焊锡把两半连起来。',
     hw_title: '1. 准备开发板（需要焊接）',
-    hw_1: '准备一块带 PSRAM、有两个 USB-C 口（COM 和原生 USB）的 ESP32-S3 开发板。翻到背面，找到 <code>USB-OTG</code> 焊盘。',
+    hw_1: '购买<a href="https://www.aliexpress.com/item/1005004025123046.html">源地工作室（VCC-GND Studio）的 <strong>YD-ESP32-S3</strong>（AliExpress 商品页）</a>。在商品页的选项中选择 <strong>N16R8</strong> 或 <strong>N8R2</strong>：支持这两种。开发板有两个 USB-C 口，分别标有 <code>COM</code> 和 <code>USB</code>（<a href="https://github.com/vcc-gnd/YD-ESP32-S3">厂商的照片和资料</a>）。收到后翻到背面，找到 <code>USB-OTG</code> 焊盘。',
+    hw_cert: '<strong>关于无线认证的说明。</strong>YD-ESP32-S3 是一块价廉物美的开发板。不过它的 Wi-Fi 模组不是乐鑫的认证模组：没有日本的技适，我们也没有找到它在其他国家的无线认证。这是否成问题取决于你所在的国家，请了解适用于你的规定。在日本不能使用这块板子；面向日本，我们正在制作使用认证模组 ESP32-S3-MINI-1 的板子（见仓库中的 <code>hardware/board</code>）。',
     hw_2: '<strong>用焊锡短接 <code>USB-OTG</code> 焊盘。</strong>这是必需的：它把开发板的 5 V 送到目标板的 USB 口。不短接的话目标芯片不会上电，什么也检测不到。',
     intro: '将固件写入 ESP32-S3，即可通过 Tailscale 使用目标板的 USB 串口控制台。无需安装任何软件，只要本页面和一根 USB 线。',
     version: '版本:',
@@ -163,7 +167,7 @@ const STRINGS = {
     flash_1: '将 ESP32-S3 开发板的 <strong><code>COM</code></strong> 口（标有 COM 或 UART）连接到电脑。它通过自动下载电路写入固件，并显示启动日志。原生 USB 口（标有 USB 或 OTG）也可以写入，但短接 <code>USB-OTG</code> 焊盘之后，两个口绝不能同时接电脑。',
     flash_module: '查看模组金属屏蔽罩上的丝印（如 <code>ESP32-S3-N16R8</code>），并在下方选择对应型号。N 表示 flash 容量，R 表示 PSRAM 容量。',
     module: '模组',
-    module_note: '不支持没有 PSRAM 的模组（不带 R 的 N4、N8、N16）。丝印为 ESP32-S3-N16R8 和 ESP32-S3-N8R2 的模组经过实机验证，N8R8 按对应设置构建但未经验证。',
+    module_note: '不支持没有 PSRAM 的模组（不带 R 的 N4、N8、N16）。支持丝印为 ESP32-S3-N16R8 和 ESP32-S3-N8R2 的模组；N8R8 按对应设置构建。',
     flash_2: '点击下方按钮，在对话框中选择 <code>USB JTAG/serial debug unit</code> 端口。',
     flash_3: '选择 "Install"。新板子请勾选 "Erase device"。大约需要一分钟。',
     setup_title: '3. 配置',
@@ -183,7 +187,8 @@ const STRINGS = {
     hw_3: 'Recuerda el papel de cada puerto: <strong><code>COM</code> = alimentación de 5 V</strong> (un cargador o un PC), <strong><code>USB</code> = la SBC</strong> (el puerto USB de depuración de la placa objetivo). Para grabar y configurar, <code>COM</code> se conecta al PC; <code>USB</code> puede seguir en la SBC.',
     pad_caption: 'El pad USB-OTG en la parte trasera de la placa, antes de puentearlo. Une las dos mitades con una gota de estaño.',
     hw_title: '1. Preparar la placa (hay que soldar)',
-    hw_1: 'Necesitas una placa ESP32-S3 con PSRAM y dos puertos USB-C (COM y USB nativo). Dale la vuelta y localiza el pad de soldadura <code>USB-OTG</code>.',
+    hw_1: 'Compra la <a href="https://www.aliexpress.com/item/1005004025123046.html"><strong>YD-ESP32-S3</strong> de VCC-GND Studio (su página en AliExpress)</a>. En esa página elige <strong>N16R8</strong> o <strong>N8R2</strong>: esas dos están soportadas. La placa tiene dos puertos USB-C, rotulados <code>COM</code> y <code>USB</code> (<a href="https://github.com/vcc-gnd/YD-ESP32-S3">fotos y documentos del fabricante</a>). Cuando llegue, dale la vuelta y localiza el pad de soldadura <code>USB-OTG</code>.',
+    hw_cert: '<strong>Una nota sobre la certificación de radio.</strong> La YD-ESP32-S3 es una placa buena y barata. Su módulo Wi-Fi, sin embargo, no es uno de los módulos certificados de Espressif: no tiene la certificación japonesa 技適 y no hemos encontrado una certificación de radio para él en otros países. Que eso importe depende de dónde estés, así que consulta las normas que se te aplican. En Japón la placa no puede usarse; para Japón estamos haciendo una placa con el módulo certificado ESP32-S3-MINI-1 (véase <code>hardware/board</code> en el repositorio).',
     hw_2: '<strong>Puentea el pad <code>USB-OTG</code> con soldadura.</strong> Es obligatorio: lleva los 5 V de la placa al puerto USB de la placa objetivo. Sin él, el chip objetivo nunca se enciende y no se detecta nada.',
     intro: 'Graba un ESP32-S3 para acceder a la consola serie USB de una placa a través de Tailscale. No hay nada que instalar: bastan esta página y un cable USB.',
     version: 'Versión:',
@@ -192,7 +197,7 @@ const STRINGS = {
     flash_1: 'Conecta al PC el puerto <strong><code>COM</code></strong> de la placa ESP32-S3 (marcado como COM o UART). Graba la placa a través del circuito de descarga automática y muestra el registro de arranque. El puerto USB nativo (marcado como USB u OTG) también sirve, pero una vez puenteado el pad <code>USB-OTG</code>, nunca conectes los dos puertos a PCs a la vez.',
     flash_module: 'Lee la marca de la carcasa metálica del módulo, por ejemplo <code>ESP32-S3-N16R8</code>, y elige esa variante abajo. N es el tamaño de la flash y R el de la PSRAM.',
     module: 'Módulo',
-    module_note: 'Los módulos sin PSRAM (N4, N8, N16 sin R) no están soportados. Los módulos marcados ESP32-S3-N16R8 y ESP32-S3-N8R2 se han probado en hardware; la N8R8 se compila con los ajustes correspondientes pero no está verificada.',
+    module_note: 'Los módulos sin PSRAM (N4, N8, N16 sin R) no están soportados. Los módulos marcados ESP32-S3-N16R8 y ESP32-S3-N8R2 son las variantes soportadas; la N8R8 se compila con los ajustes correspondientes.',
     flash_2: 'Pulsa el botón de abajo y elige el puerto <code>USB JTAG/serial debug unit</code> en el diálogo.',
     flash_3: 'Elige "Install". En una placa nueva, marca "Erase device". Tarda alrededor de un minuto.',
     setup_title: '3. Configurar',

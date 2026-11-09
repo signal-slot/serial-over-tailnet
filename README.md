@@ -15,7 +15,7 @@ Initial setup is an interactive shell over USB serial; flashing and setup are do
 
 ## Status
 
-Verified on hardware:
+Working end to end:
 
 - Wi-Fi setup through the wizard and joining a tailnet with the approval URL.
 - `tailscale ping` from another node, both via DERP and over a direct path.
@@ -24,7 +24,7 @@ Verified on hardware:
 - On the FT4232H, three ports claimed at once and a client on the fourth port refused.
 - Recovery after adapter reboot, Wi-Fi reconnection and USB replug.
 
-Not verified:
+Not yet:
 
 - Headless registration with an auth key.
 - CP210x, CH340/CH341, and non-H-series FTDI chips such as the FT232R.
@@ -39,9 +39,9 @@ PSRAM is required: network thread stacks and TLS buffers live there.
 
 | Variant | Flash | PSRAM | Status |
 | --- | --- | --- | --- |
-| N16R8 | 16 MB | 8 MB octal | tested |
-| N8R8 | 8 MB | 8 MB octal | built, untested |
-| N8R2 | 8 MB | 2 MB quad | tested |
+| N16R8 | 16 MB | 8 MB octal | supported |
+| N8R8 | 8 MB | 8 MB octal | built |
+| N8R2 | 8 MB | 2 MB quad | supported |
 | N4, N8, N16 (no PSRAM) | | none | not supported |
 
 N16R8, N8R8 and N8R2 are the variants found on the YD-ESP32-S3 board.
@@ -80,7 +80,12 @@ tsnode is split into these modules.
 
 ### Prepare the board (soldering required)
 
-Use an ESP32-S3 board with PSRAM and two USB-C ports (COM and native USB).
+Buy the [**YD-ESP32-S3** from VCC-GND Studio (its page on AliExpress)](https://www.aliexpress.com/item/1005004025123046.html).
+On that page choose **N16R8** or **N8R2**: those two are supported.
+The board has two USB-C ports, labelled `COM` and `USB` ([photos and documents from its maker](https://github.com/vcc-gnd/YD-ESP32-S3)).
+
+**A note on radio certification.** The YD-ESP32-S3 is a good, inexpensive board. One thing to know before buying: its Wi-Fi module (marked `ESP32-S3-N16R8` or `ESP32-S3-N8R2`) is not one of Espressif's certified modules. It has no Japanese 技適 (we looked it up in the MIC database), and we have not found a radio certification for it in any other country either. Whether that matters depends on where you are: many countries put the obligation on sellers rather than on hobbyists, so please check the rules that apply to you. In Japan, the Radio Act asks the user's own equipment to carry the 技適 mark, so this board cannot be used there; for Japan we are making a board around the certified ESP32-S3-MINI-1 module, see [`hardware/board/`](hardware/board/) (designed and ordered in November 2026, not yet verified).
+
 Short the `USB-OTG` solder pad on the back of the board (shown below before bridging).
 
 <img src="web/usb-otg-pad.webp" alt="USB-OTG solder pad on the back of the board, still open" width="360">
