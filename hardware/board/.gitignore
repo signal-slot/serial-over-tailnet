@@ -1,0 +1,8 @@
+__pycache__/
+*.kicad_prl
+*.rpt
+work/
+*-backups/
+fp-info-cache
+# fab/ is kept: it is what was sent to JLCPCB. The unpacked Gerbers are in the zip.
+fab/gerbers/

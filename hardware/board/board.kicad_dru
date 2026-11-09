@@ -1,0 +1,5 @@
+(version 1)
+# The ground fills reach small pads through thermal reliefs (so that a passive does not
+# tombstone). Where tracks leave room for a single spoke, that spoke is enough.
+(rule "a single thermal spoke is enough"
+  (constraint min_resolved_spokes 1))
