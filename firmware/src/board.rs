@@ -38,7 +38,7 @@ mod xiao {
         }
 
         pub fn describe(&self) -> String {
-            "XIAO ESP32S3: UART on D4 (TX) and D5 (RX), 3.3 V".into()
+            "XIAO ESP32S3: UART on D10 (TX) and D9 (RX), 3.3 V".into()
         }
     }
 }

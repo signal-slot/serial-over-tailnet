@@ -5,7 +5,7 @@
 //!   (TX) and IO34 (RX) through two level translators supplied from the
 //!   header's V pin or the board's 3.3 V (the VREF switch), so the target
 //!   can be a 1.8 V or a 3.3 V one;
-//! - the XIAO ESP32S3's pins D4 (TX) and D5 (RX), wired straight to the
+//! - the XIAO ESP32S3's pins D10 (TX) and D9 (RX), wired straight to the
 //!   target: 3.3 V only.
 //!
 //! There are no modem lines on the header: DTR and RTS requests are accepted

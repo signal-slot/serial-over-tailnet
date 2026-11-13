@@ -12,8 +12,8 @@
 //!
 //! The XIAO ESP32S3 (feature `board-xiao-s3`) has one USB port and no USB
 //! host: its port is the console in both modes (the setup wizard in Setup
-//! Mode, a quiet shell otherwise), and Normal Mode bridges the UART on D4
-//! and D5 on the first port.
+//! Mode, a quiet shell otherwise), and Normal Mode bridges the UART on D10
+//! and D9 on the first port.
 #![allow(unexpected_cfgs)]
 
 mod board;
@@ -177,16 +177,17 @@ fn main() -> Result<()> {
         }
     }
 
-    // The UART to the target (the adapter board's header, the XIAO's D4 and
-    // D5). Set up in both modes, so that its TX line idles high instead of
+    // The UART to the target (the adapter board's header, the XIAO's D10 and
+    // D9). Set up in both modes, so that its TX line idles high instead of
     // floating into the target's RX.
     #[cfg(feature = "board-adapter")]
     let (uart_tx, uart_rx) = (peripherals.pins.gpio33, peripherals.pins.gpio34);
     // Not D6 and D7, the pins the board labels TX and RX: they are UART0,
     // where the ROM prints at every reset, which a target's boot loader
-    // would take for a key press.
+    // would take for a key press. D10 and D9 sit next to 3V3 and GND, so
+    // one 4-pin socket there carries the whole link.
     #[cfg(feature = "board-xiao-s3")]
-    let (uart_tx, uart_rx) = (peripherals.pins.gpio5, peripherals.pins.gpio6);
+    let (uart_tx, uart_rx) = (peripherals.pins.gpio9, peripherals.pins.gpio8);
     #[cfg(any(feature = "board-adapter", feature = "board-xiao-s3"))]
     let mut uart_header = Some(
         uart_link::UartSerial::new(
