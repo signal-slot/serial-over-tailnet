@@ -132,7 +132,7 @@ fn serve<S: Serial>(serial: &S, conn: TcpStream, port: u16) -> Result<()> {
     // from the target go out as they are (console output has no IAC).
     let session = Arc::new(Mutex::new(Session::new(
         serial.line(),
-        &format!("usb-serial-over-tailscale {}", crate::FIRMWARE_VERSION),
+        &format!("serial-over-tailnet {}", crate::FIRMWARE_VERSION),
     )));
     let serial2 = serial.clone();
     let c2 = conn.clone();

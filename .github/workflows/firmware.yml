@@ -117,7 +117,7 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/firmware-*/usb-serial-over-tailscale-*.bin
+          files: dist/firmware-*/serial-over-tailnet-*.bin
 
   # Deploys the installer site. Off while the repository is private (GitHub Pages is
   # not available to it then): set the repository variable DEPLOY_PAGES to "true"

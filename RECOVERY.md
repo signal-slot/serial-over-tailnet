@@ -89,7 +89,7 @@ $PY -m esptool --chip esp32s3 \
   0x10000 dist/n8r2/app.bin
 ```
 
-Never write the merged `usb-serial-over-tailscale-n8r2.bin` at 0x0: it fills
+Never write the merged `serial-over-tailnet-n8r2.bin` at 0x0: it fills
 the NVS area with 0xFF and erases the configuration and the registration.
 
 ## 3. Check the Wi-Fi credentials

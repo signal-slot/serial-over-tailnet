@@ -4,7 +4,7 @@
 	(uuid "6f1f0c0a-0000-4000-8000-000000000001")
 	(paper "A2")
 	(title_block
-		(title "usb-serial-over-tailscale adapter")
+		(title "serial-over-tailnet adapter")
 		(comment 1 "Generated from design.py by gen_sch.py")
 	)
 	(lib_symbols

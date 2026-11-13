@@ -196,7 +196,7 @@ impl<'a, C: Console, P: Platform> Shell<'a, C, P> {
         let st = self.platform.status();
         self.line("");
         self.line(&format!(
-            "usb-serial-over-tailscale {} - {}",
+            "serial-over-tailnet {} - {}",
             st.firmware,
             if st.setup_mode {
                 "setup mode"

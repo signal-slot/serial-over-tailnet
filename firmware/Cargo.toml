@@ -1,5 +1,5 @@
 [package]
-name = "usb-serial-over-tailscale-firmware"
+name = "serial-over-tailnet-firmware"
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
@@ -7,7 +7,7 @@ description = "ESP32-S3 firmware: interactive setup shell, USB serial host (CDC-
 rust-version = "1.77"
 
 [[bin]]
-name = "usb-serial-over-tailscale-firmware"
+name = "serial-over-tailnet-firmware"
 harness = false
 
 [profile.release]

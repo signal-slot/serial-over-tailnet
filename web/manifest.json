@@ -1,5 +1,5 @@
 {
-  "name": "usb-serial-over-tailscale (__VARIANT__)",
+  "name": "serial-over-tailnet (__VARIANT__)",
   "version": "__VERSION__",
   "new_install_prompt_erase": true,
   "builds": [

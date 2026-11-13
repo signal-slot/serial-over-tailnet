@@ -26,6 +26,8 @@ G = 2.54
 _libs = {}
 
 
+# The seed keeps the project's former name: changing it would renumber every
+# item of the schematics.
 def uid(*key):
     """A stable uuid for a thing, so regenerating does not churn the file."""
     return str(uuid.uuid5(uuid.NAMESPACE_URL, "usb-serial-over-tailscale/" + os.path.basename(HERE) + "/" + "/".join(map(str, key))))
@@ -193,7 +195,7 @@ def main():
               420 + i * 8 * G, 300)
     sch = [Sym("kicad_sch"), [Sym("version"), 20231120], [Sym("generator"), "gen_sch.py"],
            [Sym("uuid"), ROOT], [Sym("paper"), "A2"],
-           [Sym("title_block"), [Sym("title"), "usb-serial-over-tailscale adapter"],
+           [Sym("title_block"), [Sym("title"), "serial-over-tailnet adapter"],
             [Sym("comment"), 1, "Generated from design.py by gen_sch.py"]],
            [Sym("lib_symbols")] + [lib_defs[k] for k in sorted(lib_defs)]]
     sch += items

@@ -1,8 +1,10 @@
-# usb-serial-over-tailscale
+# serial-over-tailnet
 
 [日本語](README-ja.md)
 
-An ESP32-S3 board with PSRAM that joins a tailnet on its own and bridges the USB serial console of a target SBC to a TCP port on the tailnet.
+An ESP32-S3 board with PSRAM that joins a Tailscale network (a tailnet) on its own and bridges the serial console of a target SBC to a TCP port on the tailnet.
+The console is a USB serial interface of the target or, on the Seeed Studio XIAO ESP32S3, a 3.3 V UART.
+The project was called usb-serial-over-tailscale until November 2026.
 
 ![A laptop reaches the target board's serial console through Tailscale; the ESP32-S3 is powered from a USB charger and plugged into the target's USB port](web/overview.webp)
 
@@ -97,7 +99,7 @@ See "Power and wiring" below for the safety rule that follows from it.
 
 ### Flash from a browser
 
-Open [signal-slot.github.io/usb-serial-over-tailscale](https://signal-slot.github.io/usb-serial-over-tailscale/) in Chrome or Edge to flash and configure the board without installing anything.
+Open [signal-slot.github.io/serial-over-tailnet](https://signal-slot.github.io/serial-over-tailnet/) in Chrome or Edge to flash and configure the board without installing anything.
 The page opens the board's COM port (CH343, 1a86:55d3) or its USB Serial/JTAG port (303a:1001) with WebSerial and writes the CI-built binaries with ESP Web Tools (esptool-js).
 A terminal on the same page runs the setup wizard.
 It works on Windows 10 and later, macOS, Linux and ChromeOS; it does not work in Firefox, Safari or on phones.
@@ -106,7 +108,7 @@ The native USB port works too and starts the wizard as soon as a terminal opens,
 If the operating system does not list the COM port, use the native port instead.
 
 Pick the module variant on the page from the marking on the module's metal can (for example `ESP32-S3-N16R8`).
-CI (GitHub Actions) builds every variant on each push. Tags matching `v*` also attach `usb-serial-over-tailscale-<variant>.bin` (bootloader, partition table and app merged into one file) to a release.
+CI (GitHub Actions) builds every variant on each push. Tags matching `v*` also attach `serial-over-tailnet-<variant>.bin` (bootloader, partition table and app merged into one file) to a release.
 The merged file can be written with `esptool write_flash 0x0`, but it also overwrites the NVS area with 0xFF, which erases the configuration and registration.
 Updates from the page write only the three regions and keep the configuration.
 
@@ -127,7 +129,7 @@ quiet and answers nothing. `espflash monitor --port /dev/ttyACM0` is the safe
 way to watch the port from a script.
 
 ```text
-usb-serial-over-tailscale 0.1.0 - setup mode
+serial-over-tailnet 0.1.0 - setup mode
 Press Enter to start setup, or type a command:
 === Setup ===
 Scanning Wi-Fi...

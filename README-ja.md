@@ -1,8 +1,10 @@
-# usb-serial-over-tailscale
+# serial-over-tailnet
 
 [English](README.md)
 
-PSRAM 付きの ESP32-S3 単体で Tailnet に参加し、対象 SBC の USB シリアルコンソールを Tailnet 上の TCP ポートに中継するアダプタである。
+PSRAM 付きの ESP32-S3 単体で Tailscale のネットワーク（Tailnet）に参加し、対象 SBC のシリアルコンソールを Tailnet 上の TCP ポートに中継するアダプタである。
+中継するのは対象の USB シリアルインターフェースで、Seeed Studio XIAO ESP32S3 では 3.3 V の UART である。
+2026 年 11 月までは usb-serial-over-tailscale という名前だった。
 
 ![ノート PC から Tailscale 経由で対象ボードのシリアルコンソールに届く。ESP32-S3 は USB 充電器から給電し、対象の USB ポートに挿す](web/overview.webp)
 
@@ -106,7 +108,7 @@ YD-ESP32-S3 は安くてよいボードである。
 
 ### ブラウザから書き込む
 
-Chrome か Edge で [signal-slot.github.io/usb-serial-over-tailscale](https://signal-slot.github.io/usb-serial-over-tailscale/) を開くと、ソフトウェアを何も入れずに書き込みと初期設定ができる。
+Chrome か Edge で [signal-slot.github.io/serial-over-tailnet](https://signal-slot.github.io/serial-over-tailnet/) を開くと、ソフトウェアを何も入れずに書き込みと初期設定ができる。
 ページは WebSerial でボードの COM ポート（CH343、1a86:55d3）か USB Serial/JTAG ポート（303a:1001）を開き、ESP Web Tools（esptool-js）で CI がビルドしたバイナリを書く。
 同じページの端末でセットアップウィザードも操作できる。
 Windows 10 以降、macOS、Linux、ChromeOS で動き、Firefox と Safari とスマートフォンでは動かない。
@@ -115,7 +117,7 @@ native 側でも書き込めて、端末を開くとすぐウィザードが始�
 OS に COM ポートが見えないときは native 側を使う。
 
 ページではモジュールの金属カバーの刻印（`ESP32-S3-N16R8` など）から型番を選ぶ。
-CI（GitHub Actions）は push のたびに全型番をビルドし、`v*` タグでは Release にも `usb-serial-over-tailscale-<型番>.bin`（bootloader、パーティション表、アプリを結合した 1 本）を添付する。
+CI（GitHub Actions）は push のたびに全型番をビルドし、`v*` タグでは Release にも `serial-over-tailnet-<型番>.bin`（bootloader、パーティション表、アプリを結合した 1 本）を添付する。
 結合したものは `esptool write_flash 0x0` で書けるが、NVS の領域も 0xFF で上書きするので設定と登録が消える。
 ページからの更新は 3 つの領域だけを書くので設定は残る。
 
@@ -135,7 +137,7 @@ ROM のダウンロードモードに入ってしまい、無言のまま何も�
 スクリプトから覗くときは `espflash monitor --port /dev/ttyACM0` が安全である。
 
 ```text
-usb-serial-over-tailscale 0.1.0 - setup mode
+serial-over-tailnet 0.1.0 - setup mode
 Press Enter to start setup, or type a command:
 === Setup ===
 Scanning Wi-Fi...

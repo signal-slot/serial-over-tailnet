@@ -1,4 +1,4 @@
-//! usb-serial-over-tailscale firmware for the ESP32-S3 (see `board` for the
+//! serial-over-tailnet firmware for the ESP32-S3 (see `board` for the
 //! boards it runs on).
 //!
 //! Boot flow:
@@ -57,7 +57,7 @@ pub const UART_HEADER_INTERFACE: u16 = 0;
 fn main() -> Result<()> {
     esp_idf_svc::sys::link_patches();
     EspLogger::initialize_default();
-    info!("usb-serial-over-tailscale firmware {FIRMWARE_VERSION} starting");
+    info!("serial-over-tailnet firmware {FIRMWARE_VERSION} starting");
     let reset = platform::last_reset();
     if reset.is_fault() {
         warn!("last reset: {}", reset.describe());
