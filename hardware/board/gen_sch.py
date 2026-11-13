@@ -11,7 +11,11 @@ import os
 import sys
 import uuid
 
+# The board described is the one in the directory given as the argument (its design.py),
+# this script's own by default.
+HERE = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, HERE)
 import design  # noqa: E402
 from sexpr import Sym, dump, find, first, parse  # noqa: E402
 
@@ -24,7 +28,7 @@ _libs = {}
 
 def uid(*key):
     """A stable uuid for a thing, so regenerating does not churn the file."""
-    return str(uuid.uuid5(uuid.NAMESPACE_URL, "usb-serial-over-tailscale/board/" + "/".join(map(str, key))))
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, "usb-serial-over-tailscale/" + os.path.basename(HERE) + "/" + "/".join(map(str, key))))
 
 
 def lib_symbol(lib_id):
@@ -194,7 +198,7 @@ def main():
            [Sym("lib_symbols")] + [lib_defs[k] for k in sorted(lib_defs)]]
     sch += items
     sch.append([Sym("sheet_instances"), [Sym("path"), "/", [Sym("page"), "1"]]])
-    here = os.path.dirname(os.path.abspath(__file__))
+    here = HERE
     out = os.path.join(here, "board.kicad_sch")
     open(out, "w").write(dump(sch) + "\n")
     # The symbols drawn here, as a project library, so KiCad can find them again.

@@ -21,13 +21,16 @@ import zipfile
 
 import pcbnew
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# The board is the one in the directory given as the argument, this script's own by
+# default.
+SCRIPTS = os.path.dirname(os.path.abspath(__file__))
+HERE = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else SCRIPTS
+sys.path.insert(0, HERE)
 import design  # noqa: E402
 
-HERE = os.path.dirname(os.path.abspath(__file__))
 BOARD = os.path.join(HERE, "board.kicad_pcb")
 FAB = os.path.join(HERE, "fab")
-LAYERS = "F.Cu,In1.Cu,In2.Cu,B.Cu,F.Paste,B.Paste,F.SilkS,B.SilkS,F.Mask,B.Mask,Edge.Cuts"
+OUTER = "F.Paste,B.Paste,F.SilkS,B.SilkS,F.Mask,B.Mask,Edge.Cuts"
 
 
 def run(*args):
@@ -41,7 +44,7 @@ def run(*args):
 # writes jlc_transforms.json: for each part number, the rotation and the origin of
 # JLCPCB's footprint in KiCad's footprint frame). The centroid file must therefore give
 # JLCPCB's origin and JLCPCB's rotation, not KiCad's.
-TRANSFORMS = json.load(open(os.path.join(HERE, "jlc_transforms.json")))
+TRANSFORMS = json.load(open(os.path.join(SCRIPTS, "jlc_transforms.json")))
 FOOTPRINTS = "/usr/share/kicad/footprints"
 
 
@@ -166,7 +169,9 @@ def main():
     shutil.rmtree(FAB, ignore_errors=True)
     gerbers = os.path.join(FAB, "gerbers")
     os.makedirs(gerbers)
-    run("pcb", "export", "gerbers", "--layers", LAYERS, "--no-protel-ext", "-o", gerbers + "/", BOARD)
+    copper = pcbnew.LoadBoard(BOARD).GetCopperLayerCount()
+    layers = ",".join(["F.Cu"] + [f"In{i}.Cu" for i in range(1, copper - 1)] + ["B.Cu", OUTER])
+    run("pcb", "export", "gerbers", "--layers", layers, "--no-protel-ext", "-o", gerbers + "/", BOARD)
     run("pcb", "export", "drill", "--format", "excellon", "--excellon-units", "mm",
         "--excellon-separate-th", "-o", gerbers + "/", BOARD)
     with zipfile.ZipFile(os.path.join(FAB, "gerbers.zip"), "w", zipfile.ZIP_DEFLATED) as z:
