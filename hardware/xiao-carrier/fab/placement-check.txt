@@ -1,0 +1,16 @@
+JLCPCB's footprint of each part, placed as cpl.csv says, against KiCad's pads:
+largest distance between a pad and the pad it must cover (mm).
+
+U3    top    rot 180.0  0.109
+U2    top    rot 180.0  0.109
+R7    top    rot   0.0  0.077
+R6    top    rot   0.0  0.077
+R5    top    rot  90.0  0.077
+R4    top    rot   0.0  0.077
+R3    top    rot   0.0  0.077
+R2    top    rot  90.0  0.077
+R1    top    rot  90.0  0.077
+C3    top    rot   0.0  0.060
+C2    top    rot  90.0  0.060
+C1    top    rot   0.0  0.060
+J1    top    rot 180.0  0.000

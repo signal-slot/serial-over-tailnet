@@ -1,0 +1,7 @@
+__pycache__/
+*.kicad_prl
+*.rpt
+work/
+*-backups/
+fp-info-cache
+fab/gerbers/
