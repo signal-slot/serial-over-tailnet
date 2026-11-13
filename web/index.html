@@ -44,9 +44,15 @@
 
 <p>
   <label><span data-i18n="board"></span>
-    <select id="board">
-      <option value="yd">YD-ESP32-S3 (USB)</option>
-      <option value="xiao">Seeed Studio XIAO ESP32S3 (UART)</option>
+    <select id="board" class="variant">
+      <optgroup label="YD-ESP32-S3 (USB)">
+        <option value="n16r8">YD-ESP32-S3 N16R8 (16 MB, 8 MB PSRAM)</option>
+        <option value="n8r8">YD-ESP32-S3 N8R8 (8 MB, 8 MB PSRAM)</option>
+        <option value="n8r2">YD-ESP32-S3 N8R2 (8 MB, 2 MB PSRAM)</option>
+      </optgroup>
+      <optgroup label="Seeed Studio (UART)">
+        <option value="xiao-s3">Seeed Studio XIAO ESP32S3</option>
+      </optgroup>
     </select>
   </label>
 </p>
@@ -70,11 +76,16 @@
   <li data-i18n-html="flash_3"></li>
 </ol>
 <p>
-  <label class="yd-only"><span data-i18n="module"></span>
-    <select id="variant">
-      <option value="n16r8">N16R8 (16 MB, 8 MB PSRAM)</option>
-      <option value="n8r8">N8R8 (8 MB, 8 MB PSRAM)</option>
-      <option value="n8r2">N8R2 (8 MB, 2 MB PSRAM)</option>
+  <label><span data-i18n="board"></span>
+    <select id="variant" class="variant">
+      <optgroup label="YD-ESP32-S3 (USB)">
+        <option value="n16r8">YD-ESP32-S3 N16R8 (16 MB, 8 MB PSRAM)</option>
+        <option value="n8r8">YD-ESP32-S3 N8R8 (8 MB, 8 MB PSRAM)</option>
+        <option value="n8r2">YD-ESP32-S3 N8R2 (8 MB, 2 MB PSRAM)</option>
+      </optgroup>
+      <optgroup label="Seeed Studio (UART)">
+        <option value="xiao-s3">Seeed Studio XIAO ESP32S3</option>
+      </optgroup>
     </select>
   </label>
   <esp-web-install-button id="install" manifest="manifest-n16r8.json"></esp-web-install-button>
@@ -126,7 +137,7 @@ const STRINGS = {
     unsupported: 'This browser has no WebSerial support. Open this page in Chrome or Edge on Windows, macOS, Linux or ChromeOS.',
     flash_title: '2. Flash',
     flash_1: 'Connect the <strong><code>COM</code></strong> port of the ESP32-S3 board (labelled COM or UART) to the PC. It flashes the board through the auto-download circuit and shows the boot log. The native USB port (labelled USB or OTG) works too, but after the <code>USB-OTG</code> pad is bridged, never have both ports on PCs at the same time.',
-    flash_module: 'Read the marking on the metal can of the module, such as <code>ESP32-S3-N16R8</code>, and pick that variant below. N is the flash size, R the PSRAM size.',
+    flash_module: 'Read the marking on the metal can of the module, such as <code>ESP32-S3-N16R8</code>, and pick that variant under "Board" below. N is the flash size, R the PSRAM size.',
     module: 'Module',
     module_note: 'Modules without PSRAM (N4, N8, N16 with no R) are not supported. Modules marked ESP32-S3-N16R8 and ESP32-S3-N8R2 are the supported variants; N8R8 is built with the matching settings.',
     flash_2: 'Press the button below and pick the <code>USB JTAG/serial debug unit</code> port in the dialog.',
@@ -167,7 +178,7 @@ const STRINGS = {
     unsupported: 'このブラウザは WebSerial に対応していません。Windows、macOS、Linux、ChromeOS の Chrome または Edge で開いてください。',
     flash_title: '2. 書き込む',
     flash_1: 'ESP32-S3 ボードの <strong><code>COM</code></strong> 側（ラベルは COM や UART）を PC につなぐ。自動ダウンロード回路で書き込め、起動ログも見える。native USB 側（ラベルは USB や OTG）でも書き込めるが、<code>USB-OTG</code> パッドを短絡した後は両方のポートを同時に PC へ挿さないこと。',
-    flash_module: 'モジュールの金属カバーの刻印（<code>ESP32-S3-N16R8</code> など）を読み、下でその型番を選ぶ。N が flash、R が PSRAM の容量である。',
+    flash_module: 'モジュールの金属カバーの刻印（<code>ESP32-S3-N16R8</code> など）を読み、下の「ボード」でその型番を選ぶ。N が flash、R が PSRAM の容量である。',
     module: 'モジュール',
     module_note: 'PSRAM のないモジュール（R の付かない N4、N8、N16）は対応していない。対応しているのは刻印が ESP32-S3-N16R8 と ESP32-S3-N8R2 のモジュールで、N8R8 は対応する設定でビルドしている。',
     flash_2: '下のボタンを押し、ダイアログで <code>USB JTAG/serial debug unit</code> のポートを選ぶ。',
@@ -301,37 +312,25 @@ function applyLanguage(lang) {
 applyLanguage(pickLanguage());
 document.getElementById('lang').addEventListener('change', (ev) => applyLanguage(ev.target.value));
 
-const variantSelect = document.getElementById('variant');
-const boardSelect = document.getElementById('board');
-function applyManifest() {
-  const v = board === 'xiao' ? 'xiao-s3' : variantSelect.value;
-  document.getElementById('install').setAttribute('manifest', `manifest-${v}.json`);
-}
+// One choice, shown twice (at the top and at the flash step): the image to
+// install, which also decides the board the page describes.
+const variantSelects = [...document.querySelectorAll('select.variant')];
 function applyVariant(v) {
-  variantSelect.value = v;
+  if (![...variantSelects[0].options].some((o) => o.value === v)) v = 'n16r8';
+  variantSelects.forEach((sel) => { sel.value = v; });
+  board = v === 'xiao-s3' ? 'xiao' : 'yd';
+  document.documentElement.classList.toggle('board-xiao', board === 'xiao');
+  document.getElementById('install').setAttribute('manifest', `manifest-${v}.json`);
   try { localStorage.setItem('variant', v); } catch (e) {}
-  applyManifest();
-}
-function applyBoard(b) {
-  board = b;
-  boardSelect.value = b;
-  document.documentElement.classList.toggle('board-xiao', b === 'xiao');
-  try { localStorage.setItem('board', b); } catch (e) {}
   applyLanguage(language);
-  applyManifest();
 }
 {
-  let v = new URLSearchParams(location.search).get('variant');
+  const query = new URLSearchParams(location.search);
+  let v = query.get('variant') || (query.get('board') === 'xiao' ? 'xiao-s3' : null);
   try { v = v || localStorage.getItem('variant'); } catch (e) {}
-  applyVariant([...variantSelect.options].some((o) => o.value === v) ? v : 'n16r8');
+  applyVariant(v);
 }
-variantSelect.addEventListener('change', (ev) => applyVariant(ev.target.value));
-{
-  let b = new URLSearchParams(location.search).get('board');
-  try { b = b || localStorage.getItem('board'); } catch (e) {}
-  applyBoard(b === 'xiao' ? 'xiao' : 'yd');
-}
-boardSelect.addEventListener('change', (ev) => applyBoard(ev.target.value));
+variantSelects.forEach((sel) => sel.addEventListener('change', (ev) => applyVariant(ev.target.value)));
 
 if (!('serial' in navigator)) document.documentElement.classList.add('no-serial');
 
