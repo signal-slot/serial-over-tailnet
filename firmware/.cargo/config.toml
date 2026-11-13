@@ -4,7 +4,18 @@ target = "xtensa-esp32s3-espidf"
 [target.xtensa-esp32s3-espidf]
 linker = "ldproxy"
 runner = "espflash flash --monitor --port /dev/ttyACM0 --flash-size 16mb --partition-table partitions.csv"
-rustflags = ["--cfg", "espidf_time64"]
+# -s32c1i: no hardware compare-and-swap in Rust code. On the ESP32-S3 the
+# S32C1I instruction is not atomic between the two cores when its word is in
+# PSRAM, and Rust's Mutex, Condvar and Arc put such words on the heap, which
+# is in PSRAM here. Measured on a XIAO ESP32S3 (2026-11-13): a spin lock made
+# of compare_exchange lost 151319 of 4000000 increments with its word in
+# PSRAM and none in internal RAM; the firmware panicked in FreeRTOS (a mutex
+# given by a task that does not hold it) within 100 bridge connections.
+# Without the feature the atomics are calls to ESP-IDF's __atomic_*
+# functions, which take a lock for external RAM (what ESP-IDF does for C with
+# CONFIG_STDATOMIC_S32C1I_SPIRAM_WORKAROUND): no loss in the same test, and
+# 600 connections without a panic. rustc warns that the feature is unstable.
+rustflags = ["--cfg", "espidf_time64", "-C", "target-feature=-s32c1i"]
 
 [unstable]
 build-std = ["std", "panic_abort"]

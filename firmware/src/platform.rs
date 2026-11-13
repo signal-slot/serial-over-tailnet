@@ -96,10 +96,12 @@ impl Platform for EspPlatform {
         };
         let heap = unsafe {
             format!(
-                "free {} KB, min {} KB, internal {} KB",
+                "free {} KB, min {} KB, internal {} KB (min {} KB, largest block {} KB)",
                 sys::esp_get_free_heap_size() / 1024,
                 sys::esp_get_minimum_free_heap_size() / 1024,
-                sys::esp_get_free_internal_heap_size() / 1024
+                sys::esp_get_free_internal_heap_size() / 1024,
+                sys::heap_caps_get_minimum_free_size(sys::MALLOC_CAP_INTERNAL) / 1024,
+                sys::heap_caps_get_largest_free_block(sys::MALLOC_CAP_INTERNAL) / 1024
             )
         };
         StatusSnapshot {
