@@ -22,6 +22,7 @@
   .unsupported { display: none; }
   html.no-serial .unsupported { display: block; }
   html.no-serial .needs-serial { display: none; }
+  html.board-xiao .yd-only { display: none; }
 </style>
 </head>
 <body>
@@ -41,6 +42,15 @@
 
 <div class="note unsupported" data-i18n="unsupported"></div>
 
+<p>
+  <label><span data-i18n="board"></span>
+    <select id="board">
+      <option value="yd">YD-ESP32-S3 (USB)</option>
+      <option value="xiao">Seeed Studio XIAO ESP32S3 (UART)</option>
+    </select>
+  </label>
+</p>
+
 <h2 data-i18n="hw_title"></h2>
 <ol>
   <li data-i18n-html="hw_1"></li>
@@ -48,19 +58,19 @@
   <li data-i18n-html="hw_2"></li>
   <li data-i18n-html="hw_3"></li>
 </ol>
-<p><img src="usb-otg-pad.webp" alt="USB-OTG solder pad on the back of the board, still open" width="900" height="638" style="max-width:24rem;width:100%;height:auto;border-radius:6px"><br><small data-i18n="pad_caption"></small></p>
-<p class="note" data-i18n="wire_warning"></p>
+<p class="yd-only"><img src="usb-otg-pad.webp" alt="USB-OTG solder pad on the back of the board, still open" width="900" height="638" style="max-width:24rem;width:100%;height:auto;border-radius:6px"><br><small data-i18n="pad_caption"></small></p>
+<p class="note yd-only" data-i18n="wire_warning"></p>
 
 <div class="needs-serial">
 <h2 data-i18n="flash_title"></h2>
 <ol>
   <li data-i18n-html="flash_1"></li>
-  <li data-i18n-html="flash_module"></li>
+  <li class="yd-only" data-i18n-html="flash_module"></li>
   <li data-i18n-html="flash_2"></li>
   <li data-i18n-html="flash_3"></li>
 </ol>
 <p>
-  <label><span data-i18n="module"></span>
+  <label class="yd-only"><span data-i18n="module"></span>
     <select id="variant">
       <option value="n16r8">N16R8 (16 MB, 8 MB PSRAM)</option>
       <option value="n8r8">N8R8 (8 MB, 8 MB PSRAM)</option>
@@ -69,7 +79,7 @@
   </label>
   <esp-web-install-button id="install" manifest="manifest-n16r8.json"></esp-web-install-button>
 </p>
-<p class="note" data-i18n="module_note"></p>
+<p class="note yd-only" data-i18n="module_note"></p>
 
 <h2 data-i18n="setup_title"></h2>
 <ol>
@@ -94,6 +104,17 @@
 const STRINGS = {
   en: {
     language: 'Language',
+    board: 'Board',
+    intro_xiao: 'Flash a Seeed Studio XIAO ESP32S3 so that it bridges the 3.3 V UART console of a target board over Tailscale. Nothing to install: this page and a USB cable are enough.',
+    hw_1_xiao: 'Buy a <a href="https://www.seeedstudio.com/XIAO-ESP32S3-p-5627.html"><strong>Seeed Studio XIAO ESP32S3</strong></a>. The plain board is the one that has been tested; the Sense and Plus versions have not. It has one USB-C port. Attach the antenna that comes in the package to the connector on the board.',
+    hw_cert_xiao: '<strong>A note on radio certification.</strong> We have not confirmed this board\'s radio certifications from its maker\'s documents. Please check the marking on the board and the rules that apply to you.',
+    hw_2_xiao: '<strong>Solder a 4-pin socket or pin header to <code>GND</code>, <code>3V3</code>, <code>D10</code> and <code>D9</code>.</strong> They are four holes in a row on one side of the board; counted from the USB-C end that side reads 5V, GND, 3V3, D10, D9, D8, D7. The UART to the target is on D10 and D9.',
+    hw_3_xiao: 'The UART works at <strong>3.3 V only</strong>. Do not connect it to 5 V or RS-232 signals; a 1.8 V target needs a level translator in between. This board has no USB host: it bridges a UART, not a USB serial adapter.',
+    flash_1_xiao: 'Connect the USB-C port of the XIAO to the PC. If no serial port appears, unplug it, hold the <code>B</code> (BOOT) button and plug it in again.',
+    setup_1_xiao: 'Close the flashing dialog, press "Connect" and pick the same port. The wizard starts by itself.',
+    wire_title_xiao: '4. Connect the target',
+    wire_2_xiao: 'Power the XIAO from any USB power source: a charger, or a USB port of the target. Then connect three wires to the target\'s 3.3 V UART: <code>GND</code> to GND, <code>D10</code> (TX, out of the XIAO) to the target\'s RX, <code>D9</code> (RX, into the XIAO) to the target\'s TX. Leave <code>3V3</code> unconnected.',
+    wire_3_xiao: 'From any machine on the tailnet, <code>nc &lt;hostname&gt; 35930</code> or <code>socat -,rawer,escape=0x1d TCP:&lt;hostname&gt;:35930</code> opens the console. The baud rate is set with <code>baud</code> in the setup shell (115200 by default); a client that opens with Telnet negotiation, such as pyserial&#39;s <code>rfc2217://</code>, gets an RFC 2217 session and sets the baud rate itself. There are no DTR and RTS lines.',
     hw_3: 'Remember which port is which: <strong><code>COM</code> = 5 V power in</strong> (a charger or a PC), <strong><code>USB</code> = the SBC</strong> (the target\'s debug USB port). For flashing and setup, <code>COM</code> goes to the PC; <code>USB</code> can stay on the SBC.',
     pad_caption: 'The USB-OTG pad on the back of the board, before bridging. Join the two halves with a blob of solder.',
     hw_title: '1. Prepare the board (soldering required)',
@@ -124,6 +145,17 @@ const STRINGS = {
   },
   ja: {
     language: '言語',
+    board: 'ボード',
+    intro_xiao: 'Seeed Studio XIAO ESP32S3 に書き込んで、対象ボードの 3.3 V の UART コンソールを Tailscale 経由で使えるようにします。ソフトウェアの導入は不要で、このページと USB ケーブルだけで完了します。',
+    hw_1_xiao: '<a href="https://www.seeedstudio.com/XIAO-ESP32S3-p-5627.html"><strong>Seeed Studio XIAO ESP32S3</strong></a> を買う。動作を確認したのは無印のボードで、Sense と Plus は確認していない。USB-C は 1 つである。箱に入っているアンテナをボードのコネクタに取り付ける。',
+    hw_cert_xiao: '<strong>無線の認証についてのお知らせ。</strong>このボードの無線認証は、メーカーの資料では確認できていません。ボードの表示（技適マークなど）と、お住まいの国の規則を確かめてください。',
+    hw_2_xiao: '<strong><code>GND</code>、<code>3V3</code>、<code>D10</code>、<code>D9</code> に 4 ピンのソケットかピンヘッダをはんだ付けする。</strong>ボードの片側に一列に並んだ 4 つの穴である。その側は USB-C の端から順に 5V、GND、3V3、D10、D9、D8、D7 と並んでいる。対象への UART は D10 と D9 に出ている。',
+    hw_3_xiao: 'UART は <strong>3.3 V 専用</strong>である。5 V や RS-232 の信号にはつながないこと。1.8 V の対象には間にレベル変換が要る。このボードに USB ホストの機能はない。中継するのは UART で、USB シリアル変換器ではない。',
+    flash_1_xiao: 'XIAO の USB-C を PC につなぐ。シリアルポートが現れないときは、いったん抜き、<code>B</code>（BOOT）ボタンを押しながら挿し直す。',
+    setup_1_xiao: '書き込みのダイアログを閉じてから「接続」を押し、同じポートを選ぶ。ウィザードが自動で始まる。',
+    wire_title_xiao: '4. 対象につなぐ',
+    wire_2_xiao: 'XIAO には USB から給電する。充電器でも、対象の USB ポートでもよい。そのうえで対象の 3.3 V の UART に 3 本をつなぐ。<code>GND</code> は GND へ、<code>D10</code>（TX、XIAO の出力）は対象の RX へ、<code>D9</code>（RX、XIAO の入力）は対象の TX へ。<code>3V3</code> には何もつながない。',
+    wire_3_xiao: 'Tailnet 上の端末から <code>nc &lt;hostname&gt; 35930</code> か <code>socat -,rawer,escape=0x1d TCP:&lt;hostname&gt;:35930</code> でコンソールが開く。ボーレートは設定用シェルの <code>baud</code> で決める（初期値は 115200）。pyserial の <code>rfc2217://</code> のように Telnet のネゴシエーションで始めるクライアントは RFC 2217 セッションになり、ボーレートをクライアント側で設定できる。DTR と RTS の線はない。',
     hw_3: 'ポートの役割を覚えておく。<strong><code>COM</code> = 5 V の給電</strong>（充電器か PC）、<strong><code>USB</code> = SBC</strong>（対象のデバッグ用 USB ポート）。書き込みと設定は <code>COM</code> を PC につないで行う。<code>USB</code> は SBC につないだままでよい。',
     pad_caption: '裏面の USB-OTG パッド（短絡前）。2 つの半分をはんだでつなぐ。',
     hw_title: '1. ボードを準備する（はんだ付けが要る）',
@@ -154,6 +186,17 @@ const STRINGS = {
   },
   zh: {
     language: '语言',
+    board: '开发板',
+    intro_xiao: '给 Seeed Studio XIAO ESP32S3 写入固件，通过 Tailscale 桥接目标板的 3.3 V UART 控制台。无需安装任何软件：只要这个页面和一根 USB 线。',
+    hw_1_xiao: '购买 <a href="https://www.seeedstudio.com/XIAO-ESP32S3-p-5627.html"><strong>Seeed Studio XIAO ESP32S3</strong></a>。经过测试的是普通版；Sense 和 Plus 版尚未测试。它只有一个 USB-C 口。把包装里附带的天线装到板上的天线座上。',
+    hw_cert_xiao: '<strong>关于无线认证的说明。</strong>我们没能从厂商资料中确认这块板的无线认证情况。请查看板上的标识，并确认您所在地区的规定。',
+    hw_2_xiao: '<strong>在 <code>GND</code>、<code>3V3</code>、<code>D10</code>、<code>D9</code> 上焊接一个 4 针排母或排针。</strong>它们是板子一侧连成一排的四个孔；这一侧从 USB-C 一端数起依次是 5V、GND、3V3、D10、D9、D8、D7。连接目标板的 UART 在 D10 和 D9 上。',
+    hw_3_xiao: 'UART <strong>只支持 3.3 V</strong>。不要接到 5 V 或 RS-232 电平的信号上；1.8 V 的目标板需要在中间加电平转换。这块板没有 USB 主机功能：它桥接的是 UART，而不是 USB 串口适配器。',
+    flash_1_xiao: '把 XIAO 的 USB-C 口接到电脑。如果没有出现串口，先拔下，按住 <code>B</code>（BOOT）键再插上。',
+    setup_1_xiao: '关闭写入对话框，点击“连接”并选择同一个串口。向导会自动开始。',
+    wire_title_xiao: '4. 连接目标板',
+    wire_2_xiao: 'XIAO 由任意 USB 电源供电：充电器或目标板的 USB 口都可以。然后用三根线接到目标板的 3.3 V UART：<code>GND</code> 接 GND，<code>D10</code>（TX，XIAO 的输出）接目标板的 RX，<code>D9</code>（RX，XIAO 的输入）接目标板的 TX。<code>3V3</code> 不要连接。',
+    wire_3_xiao: '在 tailnet 中的任意机器上，用 <code>nc &lt;hostname&gt; 35930</code> 或 <code>socat -,rawer,escape=0x1d TCP:&lt;hostname&gt;:35930</code> 打开控制台。波特率在配置 shell 中用 <code>baud</code> 设置（默认 115200）；以 Telnet 协商开始的客户端（如 pyserial 的 <code>rfc2217://</code>）会得到 RFC 2217 会话，可自行设置波特率。没有 DTR 和 RTS 线。',
     hw_3: '记住两个口的用途：<strong><code>COM</code> = 5 V 供电</strong>（充电器或电脑），<strong><code>USB</code> = SBC</strong>（目标板的调试 USB 口）。写入固件和配置时，把 <code>COM</code> 接到电脑；<code>USB</code> 可以继续接在 SBC 上。',
     pad_caption: '开发板背面的 USB-OTG 焊盘（短接前）。用焊锡把两半连起来。',
     hw_title: '1. 准备开发板（需要焊接）',
@@ -184,6 +227,17 @@ const STRINGS = {
   },
   es: {
     language: 'Idioma',
+    board: 'Placa',
+    intro_xiao: 'Graba una Seeed Studio XIAO ESP32S3 para que haga de puente, a través de Tailscale, con la consola UART de 3,3 V de una placa de destino. No hay que instalar nada: bastan esta página y un cable USB.',
+    hw_1_xiao: 'Compra una <a href="https://www.seeedstudio.com/XIAO-ESP32S3-p-5627.html"><strong>Seeed Studio XIAO ESP32S3</strong></a>. La que se ha probado es la placa normal; las versiones Sense y Plus no se han probado. Tiene un solo puerto USB-C. Conecta la antena que viene en la caja al conector de la placa.',
+    hw_cert_xiao: '<strong>Nota sobre la certificación de radio.</strong> No hemos podido confirmar las certificaciones de radio de esta placa en los documentos del fabricante. Comprueba las marcas de la placa y las normas que te correspondan.',
+    hw_2_xiao: '<strong>Suelda un zócalo o una tira de 4 pines en <code>GND</code>, <code>3V3</code>, <code>D10</code> y <code>D9</code>.</strong> Son cuatro agujeros seguidos en un lado de la placa; contando desde el extremo del USB-C, ese lado es 5V, GND, 3V3, D10, D9, D8, D7. La UART hacia el destino está en D10 y D9.',
+    hw_3_xiao: 'La UART funciona <strong>solo a 3,3 V</strong>. No la conectes a señales de 5 V ni RS-232; un destino de 1,8 V necesita un adaptador de niveles en medio. Esta placa no tiene host USB: hace de puente con una UART, no con un adaptador USB serie.',
+    flash_1_xiao: 'Conecta el puerto USB-C de la XIAO al PC. Si no aparece ningún puerto serie, desconéctala, mantén pulsado el botón <code>B</code> (BOOT) y vuelve a conectarla.',
+    setup_1_xiao: 'Cierra el diálogo de grabación, pulsa «Conectar» y elige el mismo puerto. El asistente empieza solo.',
+    wire_title_xiao: '4. Conecta el destino',
+    wire_2_xiao: 'Alimenta la XIAO desde cualquier fuente USB: un cargador o un puerto USB del destino. Después conecta tres cables a la UART de 3,3 V del destino: <code>GND</code> a GND, <code>D10</code> (TX, salida de la XIAO) al RX del destino y <code>D9</code> (RX, entrada de la XIAO) al TX del destino. Deja <code>3V3</code> sin conectar.',
+    wire_3_xiao: 'Desde cualquier máquina de la tailnet, <code>nc &lt;hostname&gt; 35930</code> o <code>socat -,rawer,escape=0x1d TCP:&lt;hostname&gt;:35930</code> abre la consola. La velocidad se fija con <code>baud</code> en la shell de configuración (115200 por defecto); un cliente que empieza con la negociación Telnet, como <code>rfc2217://</code> de pyserial, obtiene una sesión RFC 2217 y fija la velocidad él mismo. No hay líneas DTR ni RTS.',
     hw_3: 'Recuerda el papel de cada puerto: <strong><code>COM</code> = alimentación de 5 V</strong> (un cargador o un PC), <strong><code>USB</code> = la SBC</strong> (el puerto USB de depuración de la placa objetivo). Para grabar y configurar, <code>COM</code> se conecta al PC; <code>USB</code> puede seguir en la SBC.',
     pad_caption: 'El pad USB-OTG en la parte trasera de la placa, antes de puentearlo. Une las dos mitades con una gota de estaño.',
     hw_title: '1. Preparar la placa (hay que soldar)',
@@ -227,11 +281,19 @@ function pickLanguage() {
   return 'en';
 }
 
+// The board the page is showing: 'yd' (YD-ESP32-S3, USB host) or 'xiao'
+// (Seeed Studio XIAO ESP32S3, UART). A string with the key `<name>_xiao`
+// replaces `<name>` for the XIAO.
+let board = 'yd';
+let language = 'en';
+
 function applyLanguage(lang) {
-  const t = STRINGS[lang];
+  language = lang;
+  const all = STRINGS[lang];
+  const t = (key) => (board === 'xiao' && all[key + '_xiao']) || all[key];
   document.documentElement.lang = lang;
-  document.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = t[el.dataset.i18n]; });
-  document.querySelectorAll('[data-i18n-html]').forEach((el) => { el.innerHTML = t[el.dataset.i18nHtml]; });
+  document.querySelectorAll('[data-i18n]').forEach((el) => { el.textContent = t(el.dataset.i18n); });
+  document.querySelectorAll('[data-i18n-html]').forEach((el) => { el.innerHTML = t(el.dataset.i18nHtml); });
   document.getElementById('lang').value = lang;
   try { localStorage.setItem('lang', lang); } catch (e) {}
 }
@@ -240,10 +302,23 @@ applyLanguage(pickLanguage());
 document.getElementById('lang').addEventListener('change', (ev) => applyLanguage(ev.target.value));
 
 const variantSelect = document.getElementById('variant');
-function applyVariant(v) {
+const boardSelect = document.getElementById('board');
+function applyManifest() {
+  const v = board === 'xiao' ? 'xiao-s3' : variantSelect.value;
   document.getElementById('install').setAttribute('manifest', `manifest-${v}.json`);
+}
+function applyVariant(v) {
   variantSelect.value = v;
   try { localStorage.setItem('variant', v); } catch (e) {}
+  applyManifest();
+}
+function applyBoard(b) {
+  board = b;
+  boardSelect.value = b;
+  document.documentElement.classList.toggle('board-xiao', b === 'xiao');
+  try { localStorage.setItem('board', b); } catch (e) {}
+  applyLanguage(language);
+  applyManifest();
 }
 {
   let v = new URLSearchParams(location.search).get('variant');
@@ -251,6 +326,12 @@ function applyVariant(v) {
   applyVariant([...variantSelect.options].some((o) => o.value === v) ? v : 'n16r8');
 }
 variantSelect.addEventListener('change', (ev) => applyVariant(ev.target.value));
+{
+  let b = new URLSearchParams(location.search).get('board');
+  try { b = b || localStorage.getItem('board'); } catch (e) {}
+  applyBoard(b === 'xiao' ? 'xiao' : 'yd');
+}
+boardSelect.addEventListener('change', (ev) => applyBoard(ev.target.value));
 
 if (!('serial' in navigator)) document.documentElement.classList.add('no-serial');
 

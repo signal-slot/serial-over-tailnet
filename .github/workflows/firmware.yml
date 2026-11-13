@@ -19,10 +19,10 @@ jobs:
       matrix:
         # Module variants n<flash MB>r<PSRAM MB>: the ones the YD-ESP32-S3
         # board is made with. PSRAM is required; flash size and PSRAM mode
-        # are build-time settings. `adapter` is the board in hardware/board
-        # and `xiao-s3` the Seeed Studio XIAO ESP32S3 (no USB host: a 3.3 V
-        # UART is bridged); they are built here but not offered by the
-        # installer until each has been tested on hardware.
+        # are build-time settings. `xiao-s3` is the Seeed Studio XIAO ESP32S3
+        # (no USB host: a 3.3 V UART is bridged). `adapter` is the board in
+        # hardware/board; it is built here but not offered by the installer
+        # until a board has been made and tested.
         variant: [n16r8, n8r8, n8r2, adapter, xiao-s3]
         include:
           - variant: adapter
@@ -100,7 +100,7 @@ jobs:
           mkdir -p site/firmware
           cp web/* site/
           rm site/manifest.json
-          rm -rf dist/firmware-adapter dist/firmware-xiao-s3   # untested boards: not on the site or in releases yet
+          rm -rf dist/firmware-adapter   # untested board: not on the site or in releases yet
           for d in dist/firmware-*; do
             v=${d#dist/firmware-}
             mkdir -p "site/firmware/$v"
