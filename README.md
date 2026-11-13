@@ -84,6 +84,17 @@ tsnode is split into these modules.
 
 ### Prepare the board (soldering required)
 
+Two boards can be used; which one depends on where the target's console is.
+
+| Board | Bridges | What to solder |
+| --- | --- | --- |
+| YD-ESP32-S3 | a USB serial interface of the target (its debug USB port) | the `USB-OTG` pad on the back |
+| Seeed Studio XIAO ESP32S3 | a 3.3 V UART of the target (pins or a debug connector) | a 4-pin socket or pin header |
+
+The rest of this section prepares the YD-ESP32-S3.
+For the XIAO ESP32S3, its preparation and wiring are in "[Seeed Studio XIAO ESP32S3](#seeed-studio-xiao-esp32s3)" below.
+Flashing and the initial setup are the same for both.
+
 Buy the [**YD-ESP32-S3** from VCC-GND Studio (its page on AliExpress)](https://www.aliexpress.com/item/1005004025123046.html).
 On that page choose **N16R8** or **N8R2**: those two are supported.
 The board has two USB-C ports, labelled `COM` and `USB` ([photos and documents from its maker](https://github.com/vcc-gnd/YD-ESP32-S3)).
