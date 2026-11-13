@@ -1,7 +1,12 @@
-//! The adapter board's UART header (`hardware/board`: G, TX, RX, V) as a
-//! channel for `bridge`. UART1 on IO33 (TX) and IO34 (RX), through two level
-//! translators supplied from the header's V pin or the board's 3.3 V (the
-//! VREF switch), so the target can be a 1.8 V or a 3.3 V one.
+//! A UART of the module as a channel for `bridge` (UART1; the pins are the
+//! board's, see `main`):
+//!
+//! - the adapter board's UART header (`hardware/board`: G, TX, RX, V), IO33
+//!   (TX) and IO34 (RX) through two level translators supplied from the
+//!   header's V pin or the board's 3.3 V (the VREF switch), so the target
+//!   can be a 1.8 V or a 3.3 V one;
+//! - the XIAO ESP32S3's pins D4 (TX) and D5 (RX), wired straight to the
+//!   target: 3.3 V only.
 //!
 //! There are no modem lines on the header: DTR and RTS requests are accepted
 //! and do nothing. A break is made by inverting TX while it lasts.
@@ -11,7 +16,7 @@ use crate::usb_host::OpenError;
 use adapter_core::usbserial::{LineSettings, Parity, StopBits};
 use anyhow::{anyhow, Result};
 use esp_idf_svc::hal::delay::TickType;
-use esp_idf_svc::hal::gpio::{Gpio33, Gpio34};
+use esp_idf_svc::hal::gpio::{InputPin, OutputPin};
 use esp_idf_svc::hal::uart::{config, UartDriver, UART1};
 use esp_idf_svc::hal::units::Hertz;
 use esp_idf_svc::sys;
@@ -34,8 +39,8 @@ struct Inner {
 impl UartSerial {
     pub fn new(
         uart1: UART1<'static>,
-        tx: Gpio33<'static>,
-        rx: Gpio34<'static>,
+        tx: impl OutputPin + 'static,
+        rx: impl InputPin + 'static,
         baud: u32,
     ) -> Result<UartSerial> {
         let cfg = config::Config::default()

@@ -9,6 +9,11 @@
 //!   console(s); Wi-Fi + Tailscale node + one TCP bridge per serial interface
 //!   of the target, on the first port plus the interface number. The shell
 //!   stays available on UART0 (`status`, `setup`, ...).
+//!
+//! The XIAO ESP32S3 (feature `board-xiao-s3`) has one USB port and no USB
+//! host: its port is the console in both modes (the setup wizard in Setup
+//! Mode, a quiet shell otherwise), and Normal Mode bridges the UART on D4
+//! and D5 on the first port.
 #![allow(unexpected_cfgs)]
 
 mod board;
@@ -18,8 +23,11 @@ mod console;
 mod nvs_store;
 mod platform;
 mod tls;
-#[cfg(feature = "board-adapter")]
+#[cfg(any(feature = "board-adapter", feature = "board-xiao-s3"))]
 mod uart_link;
+// Compiled for every board (`bridge` and `platform` use its types); a board
+// without a USB host never starts it.
+#[cfg_attr(feature = "board-xiao-s3", allow(dead_code))]
 mod usb_host;
 mod wifi;
 
@@ -42,6 +50,9 @@ pub const DEFAULT_BAUD: u32 = 115_200;
 /// composite device with CDC functions has 0, 2, 4, ...).
 #[cfg(feature = "board-adapter")]
 pub const UART_HEADER_INTERFACE: u16 = 8;
+/// The XIAO has no USB host: its UART is the only channel, on the first port.
+#[cfg(feature = "board-xiao-s3")]
+pub const UART_HEADER_INTERFACE: u16 = 0;
 
 fn main() -> Result<()> {
     esp_idf_svc::sys::link_patches();
@@ -119,8 +130,9 @@ fn main() -> Result<()> {
 
     // Native USB port: host (normal) or CDC device (setup); never both.
     // The host is started below, after the node, so a target present at
-    // boot finds a node to be bridged on.
-    let cdc = if setup_mode {
+    // boot finds a node to be bridged on. A board without a USB host keeps
+    // the CDC device in both modes.
+    let cdc = if setup_mode || cfg!(feature = "board-xiao-s3") {
         match console::UsbSerialConsole::install(
             peripherals.usb_serial,
             peripherals.pins.gpio19,
@@ -165,14 +177,22 @@ fn main() -> Result<()> {
         }
     }
 
-    // The adapter board's UART header. Set up in both modes, so that its TX
-    // line idles high instead of floating into the target's RX.
+    // The UART to the target (the adapter board's header, the XIAO's D4 and
+    // D5). Set up in both modes, so that its TX line idles high instead of
+    // floating into the target's RX.
     #[cfg(feature = "board-adapter")]
+    let (uart_tx, uart_rx) = (peripherals.pins.gpio33, peripherals.pins.gpio34);
+    // Not D6 and D7, the pins the board labels TX and RX: they are UART0,
+    // where the ROM prints at every reset, which a target's boot loader
+    // would take for a key press.
+    #[cfg(feature = "board-xiao-s3")]
+    let (uart_tx, uart_rx) = (peripherals.pins.gpio5, peripherals.pins.gpio6);
+    #[cfg(any(feature = "board-adapter", feature = "board-xiao-s3"))]
     let mut uart_header = Some(
         uart_link::UartSerial::new(
             peripherals.uart1,
-            peripherals.pins.gpio33,
-            peripherals.pins.gpio34,
+            uart_tx,
+            uart_rx,
             config
                 .as_ref()
                 .and_then(|c| c.baud_rate)
@@ -185,42 +205,47 @@ fn main() -> Result<()> {
     // `port + interface` the first time the device shows it.
     if !setup_mode {
         let cfg = config.as_ref().expect("normal mode has a configuration");
-        let baud = cfg.baud_rate.unwrap_or(DEFAULT_BAUD);
         let base_port = cfg.tcp_port.unwrap_or(DEFAULT_TCP_PORT);
-        let forced = cfg
-            .usb_driver
-            .as_deref()
-            .and_then(usb_host::Driver::parse)
-            .flatten();
-        let node = platform.node().expect("node started in normal mode");
-        let host = usb_host::UsbHost::start(
-            baud,
-            forced,
-            base_port,
-            Box::new(move |interface, port, serial| {
-                let node = node.clone();
-                let spawned = platform::spawn_thread(
-                    &format!("bridge{port}"),
-                    8 * 1024,
-                    true,
-                    Box::new(move || {
-                        if let Err(e) = bridge::run(node, serial, port) {
-                            warn!("bridge: interface {interface} on port {port} stopped: {e:#}");
-                        }
-                    }),
-                );
-                if let Err(e) = spawned {
-                    warn!("bridge: interface {interface} on port {port} not started: {e}");
-                }
-            }),
-        )
-        .context("usb host")?;
-        if platform.usb.set(host).is_err() {
-            warn!("usb: host started twice");
+        #[cfg(not(feature = "board-xiao-s3"))]
+        {
+            let baud = cfg.baud_rate.unwrap_or(DEFAULT_BAUD);
+            let forced = cfg
+                .usb_driver
+                .as_deref()
+                .and_then(usb_host::Driver::parse)
+                .flatten();
+            let node = platform.node().expect("node started in normal mode");
+            let host = usb_host::UsbHost::start(
+                baud,
+                forced,
+                base_port,
+                Box::new(move |interface, port, serial| {
+                    let node = node.clone();
+                    let spawned = platform::spawn_thread(
+                        &format!("bridge{port}"),
+                        8 * 1024,
+                        true,
+                        Box::new(move || {
+                            if let Err(e) = bridge::run(node, serial, port) {
+                                warn!(
+                                    "bridge: interface {interface} on port {port} stopped: {e:#}"
+                                );
+                            }
+                        }),
+                    );
+                    if let Err(e) = spawned {
+                        warn!("bridge: interface {interface} on port {port} not started: {e}");
+                    }
+                }),
+            )
+            .context("usb host")?;
+            if platform.usb.set(host).is_err() {
+                warn!("usb: host started twice");
+            }
         }
 
-        // The adapter board's UART header, bridged like another interface.
-        #[cfg(feature = "board-adapter")]
+        // The UART to the target, bridged like another interface.
+        #[cfg(any(feature = "board-adapter", feature = "board-xiao-s3"))]
         {
             let port = base_port + UART_HEADER_INTERFACE;
             let serial = uart_header
@@ -242,7 +267,9 @@ fn main() -> Result<()> {
         }
     }
 
-    // Shell on the USB CDC console (setup mode): wizard runs when a terminal opens.
+    // Shell on the USB CDC console: in setup mode the wizard runs when a
+    // terminal opens; otherwise (a board without a USB host) it is quiet
+    // until a key is pressed.
     if let Some(mut cdc) = cdc {
         let p = platform.clone();
         std::thread::Builder::new()
@@ -254,7 +281,7 @@ fn main() -> Result<()> {
                 }
                 std::thread::sleep(Duration::from_millis(300));
                 let mut sh = Shell::new(&mut cdc, p.as_ref());
-                sh.run(true, false);
+                sh.run(setup_mode, !setup_mode);
             })?;
     }
 

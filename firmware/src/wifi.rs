@@ -9,8 +9,31 @@ use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use esp_idf_svc::wifi::{AuthMethod, ClientConfiguration, Configuration, EspWifi, WifiEvent};
 use log::{info, warn};
 use std::net::Ipv4Addr;
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+
+/// Disconnect events since the last `connect` call, and the reason code of
+/// the newest one (`wifi_err_reason_t`).
+static DISCONNECTS: AtomicU32 = AtomicU32::new(0);
+static LAST_REASON: AtomicU32 = AtomicU32::new(0);
+
+/// What a disconnect reason code means, for the ones a wrong setup produces.
+fn reason_text(reason: u32) -> &'static str {
+    match reason {
+        2 => "authentication expired",
+        15 | 204 => "4-way handshake timed out (usually a wrong password)",
+        200 => "beacon timeout",
+        201 => "no access point with this name found",
+        202 => "authentication failed (usually a wrong password)",
+        203 => "association failed",
+        205 => "connection failed",
+        210 => "the access point's security is not supported",
+        211 => "the access point's security is weaker than WPA2",
+        212 => "signal too weak",
+        _ => "see wifi_err_reason_t",
+    }
+}
 
 pub struct WifiManager {
     wifi: Mutex<EspWifi<'static>>,
@@ -44,9 +67,17 @@ impl WifiManager {
         unsafe {
             esp_idf_svc::sys::esp_wifi_set_ps(esp_idf_svc::sys::wifi_ps_type_t_WIFI_PS_NONE);
         }
+        if let Some(q) = crate::board::WIFI_MAX_TX_QDBM {
+            let r = unsafe { esp_idf_svc::sys::esp_wifi_set_max_tx_power(q) };
+            if r != esp_idf_svc::sys::ESP_OK {
+                warn!("wifi: limiting the transmit power failed: {r}");
+            }
+        }
         let events = sysloop
             .subscribe::<WifiEvent, _>(|e| match e {
                 WifiEvent::StaDisconnected(d) => {
+                    LAST_REASON.store(d.reason() as u32, Ordering::Relaxed);
+                    DISCONNECTS.fetch_add(1, Ordering::Relaxed);
                     warn!(
                         "wifi: disconnected from {:?}, reason {}",
                         String::from_utf8_lossy(d.ssid()),
@@ -108,24 +139,43 @@ impl WifiManager {
                 auth_method,
                 ..Default::default()
             });
-            if w.is_connected().unwrap_or(false) {
-                let _ = w.disconnect();
-            }
+            // Also ends an attempt still under way (a connect while one is
+            // running fails with ESP_ERR_WIFI_STATE).
+            let _ = w.disconnect();
             w.set_configuration(&conf)?;
+            DISCONNECTS.store(0, Ordering::Relaxed);
             w.connect()?;
         }
         *self.current.lock().unwrap() = Some(ssid.to_string());
         let deadline = Instant::now() + timeout;
+        let mut seen = 0;
         while Instant::now() < deadline {
             if let Some(ip) = self.ip() {
                 info!("wifi: connected to {ssid:?}, ip {ip}");
                 return Ok(ip);
             }
+            // The IDF does not try again by itself after a failed attempt,
+            // and one failed attempt is common (reason 2 on a busy channel).
+            let n = DISCONNECTS.load(Ordering::Relaxed);
+            if n != seen {
+                seen = n;
+                let _ = self.wifi.lock().unwrap().connect();
+            }
             std::thread::sleep(Duration::from_millis(200));
         }
+        let secs = timeout.as_secs();
+        if seen == 0 {
+            let associated = self.is_connected();
+            return Err(anyhow::anyhow!(if associated {
+                format!("joined the network but got no IP address in {secs}s (no DHCP answer)")
+            } else {
+                format!("no answer from the access point in {secs}s")
+            }));
+        }
+        let reason = LAST_REASON.load(Ordering::Relaxed);
         Err(anyhow::anyhow!(
-            "no IP address after {}s (wrong password or out of range?)",
-            timeout.as_secs()
+            "not connected after {secs}s and {seen} attempts: reason {reason}, {}",
+            reason_text(reason)
         ))
     }
 

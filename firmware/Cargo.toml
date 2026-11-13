@@ -23,6 +23,10 @@ default = []
 # The adapter board in hardware/board (ESP32-S3-MINI-1-N4R2, two switchable
 # USB-C ports) instead of the YD-ESP32-S3 development board.
 board-adapter = []
+# The Seeed Studio XIAO ESP32S3 (ESP32-S3R8, one USB-C port): no USB host;
+# a 3.3 V UART on D4 (TX) and D5 (RX) is bridged instead, and the USB port
+# stays the console. Build with variants/xiao-s3.defaults.
+board-xiao-s3 = []
 
 [dependencies]
 esp-idf-svc = { version = "0.53", features = ["std", "alloc", "binstart", "critical-section"] }

@@ -1,4 +1,4 @@
-//! What the board around the module does. Two boards are supported:
+//! What the board around the module does. Three boards are supported:
 //!
 //! - the YD-ESP32-S3 development board (the default): nothing to drive, the
 //!   native USB port is wired straight to the module;
@@ -13,14 +13,37 @@
 //!   setup mode the USB stays at the PC's port, where the USB Serial/JTAG
 //!   console is, which is also what the hardware does on its own before the
 //!   firmware runs (the LM66200's status output sets the select through
-//!   R11), and no 5 V goes out.
+//!   R11), and no 5 V goes out;
+//! - the Seeed Studio XIAO ESP32S3 (feature `board-xiao-s3`): one USB-C port,
+//!   which powers the board and stays the console; nothing to drive. The
+//!   target is wired to a UART on two of its pins (`uart_link`).
 
 #[cfg(feature = "board-adapter")]
 pub use adapter::{Board, Pins};
-#[cfg(not(feature = "board-adapter"))]
+#[cfg(not(any(feature = "board-adapter", feature = "board-xiao-s3")))]
 pub use devkit::Board;
+#[cfg(feature = "board-xiao-s3")]
+pub use xiao::Board;
 
-#[cfg(not(feature = "board-adapter"))]
+#[cfg(all(feature = "board-adapter", feature = "board-xiao-s3"))]
+compile_error!("board-adapter and board-xiao-s3 are different boards: enable one");
+
+#[cfg(feature = "board-xiao-s3")]
+mod xiao {
+    pub struct Board;
+
+    impl Board {
+        pub fn init(_setup_mode: bool) -> anyhow::Result<Board> {
+            Ok(Board)
+        }
+
+        pub fn describe(&self) -> String {
+            "XIAO ESP32S3: UART on D4 (TX) and D5 (RX), 3.3 V".into()
+        }
+    }
+}
+
+#[cfg(not(any(feature = "board-adapter", feature = "board-xiao-s3")))]
 mod devkit {
     pub struct Board;
 
@@ -389,3 +412,16 @@ mod adapter {
         }
     }
 }
+
+/// The Wi-Fi transmit power limit of the board, in quarter dBm, where the
+/// chip's default (20 dBm) does not work.
+///
+/// XIAO ESP32S3, measured 2026-11-11 with its own antenna on a USB hub: at
+/// 19.5 and 20 dBm two access points at -56 dBm did not answer the
+/// authentication or association request (reasons 2 and 4, every attempt);
+/// at 18, 15, 11 and 8.5 dBm both went on to the handshake every time.
+/// 15 dBm leaves 3 dB to the highest level that worked.
+#[cfg(feature = "board-xiao-s3")]
+pub const WIFI_MAX_TX_QDBM: Option<i8> = Some(60);
+#[cfg(not(feature = "board-xiao-s3"))]
+pub const WIFI_MAX_TX_QDBM: Option<i8> = None;

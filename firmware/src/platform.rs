@@ -111,6 +111,9 @@ impl Platform for EspPlatform {
             peers,
             usb: match self.usb.get() {
                 Some(h) => format!("{} ({})", h.describe(), crate::usb_host::root_port_state()),
+                None if cfg!(feature = "board-xiao-s3") => {
+                    "console (this board has no USB host)".into()
+                }
                 None if self.setup_mode => "device mode (setup console)".into(),
                 None => "starting".into(),
             },
