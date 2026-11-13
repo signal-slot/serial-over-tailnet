@@ -38,7 +38,7 @@
   </label>
 </header>
 <p><span data-i18n="intro"></span> <span data-i18n="version"></span> <code>__VERSION__</code></p>
-<p><img src="overview.webp" alt="" width="1400" height="700" style="width:100%;height:auto;border-radius:6px"></p>
+<p><img id="overview" src="overview.webp" alt="" width="1400" height="700" style="width:100%;height:auto;border-radius:6px"></p>
 
 <div class="note unsupported" data-i18n="unsupported"></div>
 
@@ -320,6 +320,7 @@ function applyVariant(v) {
   variantSelects.forEach((sel) => { sel.value = v; });
   board = v === 'xiao-s3' ? 'xiao' : 'yd';
   document.documentElement.classList.toggle('board-xiao', board === 'xiao');
+  document.getElementById('overview').src = board === 'xiao' ? 'overview-xiao.webp' : 'overview.webp';
   document.getElementById('install').setAttribute('manifest', `manifest-${v}.json`);
   try { localStorage.setItem('variant', v); } catch (e) {}
   applyLanguage(language);

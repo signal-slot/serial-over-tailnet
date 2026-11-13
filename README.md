@@ -217,6 +217,9 @@ If the target is a CDC-ACM or FTDI-style bridge chip, that chip is usually bus-p
 ### Seeed Studio XIAO ESP32S3
 
 The XIAO ESP32S3 is a second board the firmware runs on.
+
+![A laptop reaches the target board's serial console through Tailscale; the XIAO ESP32S3 is powered from a USB charger and wired to the target's 3-pin debug connector with three wires](web/overview-xiao.webp)
+
 It has one USB-C port and no USB host role here: it bridges a **3.3 V UART** instead of a USB serial adapter, on port 35930.
 Use it when the target has a UART on pins or a debug connector, such as the 3-pin debug connector of a Raspberry Pi 5.
 

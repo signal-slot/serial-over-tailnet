@@ -230,6 +230,9 @@ native 側から 5 V を出すには、裏面の `USB-OTG` パッドを短絡す
 ### Seeed Studio XIAO ESP32S3
 
 XIAO ESP32S3 は、このファームウェアが動く 2 つ目のボードである。
+
+![ノート PC から Tailscale 経由で対象ボードのシリアルコンソールに届く。XIAO ESP32S3 は USB 充電器から給電し、対象の 3 ピンのデバッグ用コネクタに 3 本の線でつなぐ](web/overview-xiao.webp)
+
 USB-C は 1 つで、USB ホストとしては使わない。
 USB シリアル変換器の代わりに **3.3 V の UART** を中継し、ポートは 35930 である。
 対象の UART がピンやデバッグ用コネクタに出ている場合に使う。
