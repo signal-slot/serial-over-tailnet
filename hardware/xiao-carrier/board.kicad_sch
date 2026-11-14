@@ -1447,27 +1447,13 @@
 		(at 287.02 149.86)
 		(uuid "b5cc60bd-1f86-508e-b1d5-7a17c10a3329")
 	)
-	(global_label "UART_TX"
-		(shape passive)
-		(at 287.02 152.4 180)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right)
-		)
-		(uuid "3f2fb000-fec9-5c11-b0ee-00740536d7cf")
+	(no_connect
+		(at 287.02 152.4)
+		(uuid "45be0c14-fe24-5a96-ada7-eb7a03f52b85")
 	)
-	(global_label "UART_RX"
-		(shape passive)
-		(at 287.02 154.94 180)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify right)
-		)
-		(uuid "676138b8-794b-52c7-a5be-4aaaf395441d")
+	(no_connect
+		(at 287.02 154.94)
+		(uuid "4cab0c8c-2e3d-5291-89c4-83917912d793")
 	)
 	(no_connect
 		(at 287.02 157.48)
@@ -1499,13 +1485,27 @@
 		)
 		(uuid "774dcf26-c847-5f35-8ab3-63bf272d1b86")
 	)
-	(no_connect
-		(at 312.42 149.86)
-		(uuid "2a68def5-d842-55aa-976b-a75ccfad58e0")
+	(global_label "UART_TX"
+		(shape passive)
+		(at 312.42 149.86 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "32b2c66f-c9c8-53c9-bc22-eb66dfe3f77f")
 	)
-	(no_connect
-		(at 312.42 152.4)
-		(uuid "555b0d60-3718-5bd4-8a5e-ace6b3a00b23")
+	(global_label "UART_RX"
+		(shape passive)
+		(at 312.42 152.4 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left)
+		)
+		(uuid "62794ed8-d10a-59df-89e0-4c3b298cbc9d")
 	)
 	(no_connect
 		(at 312.42 154.94)

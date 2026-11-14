@@ -24,10 +24,11 @@ R0402 = "Resistor_SMD:R_0402_1005Metric"
 C0402 = "Capacitor_SMD:C_0402_1005Metric"
 
 # The XIAO seen from the top with the USB-C connector up: 1-7 down the left edge (D0-D6),
-# 8-14 up the right edge (D7-D10, 3V3, GND, 5V).
+# 8-14 up the right edge (D7-D10, 3V3, GND, 5V). The UART is where the firmware has it
+# (feature board-xiao-s3): D10 = TX, D9 = RX.
 XIAO = {
-    "1": NC, "2": "VREF_SENSE", "3": NC, "4": NC, "5": "UART_TX", "6": "UART_RX", "7": NC,
-    "8": NC, "9": NC, "10": NC, "11": NC, "12": "+3V3", "13": "GND", "14": NC,
+    "1": NC, "2": "VREF_SENSE", "3": NC, "4": NC, "5": NC, "6": NC, "7": NC,
+    "8": NC, "9": NC, "10": "UART_RX", "11": "UART_TX", "12": "+3V3", "13": "GND", "14": NC,
 }
 
 # (reference, symbol, value, footprint, JLCPCB part, pins)

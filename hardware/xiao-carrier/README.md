@@ -1,6 +1,7 @@
 # XIAO carrier
 
-A small board that a Seeed Studio XIAO ESP32S3 (or ESP32C3) sits on.
+A small board that a Seeed Studio XIAO ESP32S3 sits on.
+A XIAO ESP32C3 has the same outline, but the firmware does not support it, and its D9 is the boot-mode pin, which a target's TX would hold.
 Past the XIAO's end opposite the USB-C connector it has a 4-pin right-angle header with a UART at the target's voltage.
 
 **Not made yet.** Nothing here has been tested on hardware.
@@ -10,7 +11,7 @@ Past the XIAO's end opposite the USB-C connector it has a 4-pin right-angle head
 | Size | 20.0 × 31.7 mm, 2 layers |
 | Header | G, TX, RX, V (2.54 mm, right angle), the order of the adapter board in `../board` |
 | V | the target's supply, 1.65 to 5.5 V; it powers the target side of the level translators and nothing else |
-| XIAO pins | D4 = TX, D5 = RX, D1 = V / 2 (for the ADC) |
+| XIAO pins | D10 = TX, D9 = RX, as in the firmware (`board-xiao-s3`); D1 = V / 2 for the ADC, which the firmware does not read yet |
 | Level translators | 2 × SN74LVC1T45, 330 Ω in series with TX and RX |
 | Solder jumper | on the bottom, open as made; bridged, it connects V to the XIAO's 3.3 V for a 3.3 V target wired with G, TX, RX only |
 
