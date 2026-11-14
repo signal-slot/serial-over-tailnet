@@ -22,39 +22,43 @@ Tailscale のノードとして必要な機能（制御プロトコル、WireGua
 
 - ウィザードによる Wi-Fi 設定と、承認 URL 方式での Tailnet 参加。
 - 別ノードからの `tailscale ping`（DERP 経由と直接経路）。
-- Raspberry Pi Debug Probe（CDC-ACM）と Toradex Dahlia（FT4232H）のコンソール操作。
-- 両方に対する RFC 2217 セッション。pyserial からのボーレートとフレーミングの変更、DTR と RTS、ブレーク、purge。
+- XIAO ESP32S3 での、Raspberry Pi 5 の 3.3 V の UART（3 ピンのデバッグ用コネクタ）のコンソール操作。
+- YD-ESP32-S3 での、USB 経由の Raspberry Pi Debug Probe（CDC-ACM）と Toradex Dahlia（FT4232H）のコンソール操作。
+- USB の対象 2 つに対する RFC 2217 セッション。pyserial からのボーレートとフレーミングの変更、DTR と RTS、ブレーク、purge。
 - FT4232H で 3 ポートを同時に claim し、4 つ目のポートのクライアントが拒否されること。
 - アダプタ再起動、Wi-Fi 再接続、USB 抜き差しからの復帰。
-- Seeed Studio XIAO ESP32S3 での、USB の代わりに 3.3 V の UART を使った Raspberry Pi 5 のコンソール操作（後述の「Seeed Studio XIAO ESP32S3」）。
 
 まだのものは次のとおりである。
 
 - auth key による headless 登録。
+- XIAO の UART での RFC 2217 セッション（実装済み、クライアントでは未確認）。
 - CP210x、CH340/CH341、FT232R など H シリーズ以外の FTDI。
 - 対象 SBC 自体の再起動、インターネット断、control サーバ到達不能からの復帰。
 - 長時間運用、鍵期限切れ（既定 180 日）後の挙動、Task WDT による再起動。
 - RFC 2217 経由の esptool（DTR と RTS の操作列は `cargo run -p adapter-core --example rfc2217_sim` でホストでテスト済み）。
 
-### モジュールの型番
+### ボードとイメージ
 
-flash の容量と PSRAM の方式はビルド時の固定設定なので、CI は ESP32-S3 モジュールの型番ごとにイメージを作る（`firmware/variants/`）。
-PSRAM は必須である。ネットワーク系スレッドのスタックと TLS のバッファを PSRAM に置いている。
+flash の容量と PSRAM の方式はビルド時の固定設定なので、CI はボードとモジュールごとにイメージを作る（`firmware/variants/`）。
+PSRAM は必須である。
+ネットワーク系スレッドのスタック、TLS のバッファ、ヒープの大半を PSRAM に置いている。
 
-| 型番 | flash | PSRAM | 状況 |
-| --- | --- | --- | --- |
-| N16R8 | 16 MB | 8 MB Octal | 対応 |
-| N8R8 | 8 MB | 8 MB Octal | ビルドのみ |
-| N8R2 | 8 MB | 2 MB Quad | 対応 |
-| N4、N8、N16（PSRAM なし） | | なし | 非対応 |
+| イメージ | ボード | flash | PSRAM | 状況 |
+| --- | --- | --- | --- | --- |
+| `xiao-s3` | Seeed Studio XIAO ESP32S3 | 8 MB | 8 MB Octal | 対応 |
+| `n16r8` | YD-ESP32-S3（モジュール N16R8） | 16 MB | 8 MB Octal | 対応 |
+| `n8r2` | YD-ESP32-S3（モジュール N8R2） | 8 MB | 2 MB Quad | 対応 |
+| `n8r8` | YD-ESP32-S3（モジュール N8R8） | 8 MB | 8 MB Octal | ビルドのみ |
+| | PSRAM のないモジュール（N4、N8、N16） | | なし | 非対応 |
 
-N16R8、N8R8、N8R2 は、YD-ESP32-S3 ボードにある型番である。
-Seeed Studio XIAO ESP32S3（flash 8 MB、PSRAM 8 MB Octal）には専用のイメージ `xiao-s3` があり、`--features board-xiao-s3` でビルドする。
-
-手元で型番を指定してビルドするには、esp-idf-sys に型番の defaults ファイルを渡し、イメージ作成スクリプトにも型番を渡す。
+手元でイメージをビルドするには、esp-idf-sys にそのイメージの defaults ファイルを渡し、イメージ作成スクリプトにも名前を渡す。
+XIAO のイメージには feature の指定も要る。
 
 ```bash
 cd firmware
+ESP_IDF_SDKCONFIG_DEFAULTS="sdkconfig.defaults;variants/xiao-s3.defaults" cargo build --release --features board-xiao-s3
+tools/mkimage.sh xiao-s3 release
+
 ESP_IDF_SDKCONFIG_DEFAULTS="sdkconfig.defaults;variants/n8r2.defaults" cargo build --release
 tools/mkimage.sh n8r2 release
 ```
@@ -66,8 +70,10 @@ tools/mkimage.sh n8r2 release
 | `crates/tsnode` | Tailscale ノード実装。制御プレーン（ts2021 Noise と最小の HTTP/2）、WireGuard、DERP、disco、STUN、smoltcp による TCP 終端。ホストでも ESP-IDF でも動く。 |
 | `crates/adapter-core` | 対話式セットアップシェル。入出力とデバイス操作を trait で抽象化し、ウィザードをホストで単体テストする。 |
 | `tools/hostnode` | tsnode を Linux で動かす検証ツール。実 Tailnet に参加して echo サーバを公開する。 |
-| `firmware` | ESP32-S3 ファームウェア（esp-idf-svc）。設定コンソール、USB ホスト（CDC-ACM、FTDI、CP210x、CH34x）、Wi-Fi、Tailscale ノード、TCP ブリッジ。 |
+| `firmware` | ESP32-S3 ファームウェア（esp-idf-svc）。設定コンソール、UART の中継（XIAO ESP32S3）、USB ホスト（YD-ESP32-S3。CDC-ACM、FTDI、CP210x、CH34x）、Wi-Fi、Tailscale ノード、TCP ブリッジ。 |
 | `hardware/case` | YD-ESP32-S3 用の 3D プリントケース。OpenSCAD のソースと、そのまま印刷できる STL（ピンヘッダの有無の 2 種類）がある（[README](hardware/case/README-ja.md)）。 |
+| `hardware/xiao-carrier` | XIAO ESP32S3 用のキャリア基板。レベル変換と 4 ピンのヘッダを持つ。設計済みで未製作（[README](hardware/xiao-carrier/README-ja.md)）。 |
+| `hardware/board` | ESP32-S3-MINI-1 を使う独自のアダプタ基板。発注済みで未検証（[README](hardware/board/README.md)）。 |
 
 tsnode の内部は次のモジュールに分かれる。
 
@@ -160,32 +166,36 @@ YD-ESP32-S3 は安くてよいボードである。
 ### ブラウザから書き込む
 
 Chrome か Edge で [signal-slot.github.io/serial-over-tailnet](https://signal-slot.github.io/serial-over-tailnet/) を開くと、ソフトウェアを何も入れずに書き込みと初期設定ができる。
-ページは WebSerial でボードの COM ポート（CH343、1a86:55d3）か USB Serial/JTAG ポート（303a:1001）を開き、ESP Web Tools（esptool-js）で CI がビルドしたバイナリを書く。
+ページは WebSerial でボードのシリアルポートを開き、ESP Web Tools（esptool-js）で CI がビルドしたバイナリを書く。
 同じページの端末でセットアップウィザードも操作できる。
 Windows 10 以降、macOS、Linux、ChromeOS で動き、Firefox と Safari とスマートフォンでは動かない。
-つなぐのは COM 側である。自動ダウンロード回路で書き込め、起動ログも見え、対象は native 側につないだままでよい。
-native 側でも書き込めて、端末を開くとすぐウィザードが始まるが、セットアップが終わるとポートは USB ホストになって見えなくなる。
-OS に COM ポートが見えないときは native 側を使う。
 
-ページではモジュールの金属カバーの刻印（`ESP32-S3-N16R8` など）から型番を選ぶ。
-CI（GitHub Actions）は push のたびに全型番をビルドし、`v*` タグでは Release にも `serial-over-tailnet-<型番>.bin`（bootloader、パーティション表、アプリを結合した 1 本）を添付する。
+ページの最初でボードを選ぶ。
+
+- **XIAO ESP32S3**: USB-C を PC につなぐ。`USB JTAG/serial debug unit`（303a:1001）として見える。ポートが現れないときは、いったん抜き、`B`（BOOT）ボタンを押しながら挿し直す。
+- **YD-ESP32-S3**: モジュールの金属カバーの刻印（`ESP32-S3-N16R8` など）から型番を選び、`COM` 側（CH343、1a86:55d3）をつなぐ。自動ダウンロード回路で書き込め、起動ログも見え、対象は native 側につないだままでよい。native 側（303a:1001）でも書き込めて、端末を開くとすぐウィザードが始まるが、セットアップが終わるとポートは USB ホストになって見えなくなる。OS に COM ポートが見えないときは native 側を使う。
+
+CI（GitHub Actions）は push のたびに全イメージをビルドし、`v*` タグでは Release にも `serial-over-tailnet-<イメージ>.bin`（bootloader、パーティション表、アプリを結合した 1 本）を添付する。
 結合したものは `esptool write_flash 0x0` で書けるが、NVS の領域も 0xFF で上書きするので設定と登録が消える。
 ページからの更新は 3 つの領域だけを書くので設定は残る。
 
 ### 初期設定
 
-未設定の状態で native USB ポートを PC に挿すと、USB シリアル（Espressif USB JTAG/serial、303a:1001）として見える。
+未設定のボードを PC に挿すと、USB シリアル（Espressif USB JTAG/serial、303a:1001）として見える。
+XIAO では唯一のポート、YD-ESP32-S3 では native 側のポートである。
 ターミナルで開いて Enter を押すと、ウィザードが始まる。
-COM 側にも同じシェルが 115200 でログと一緒に出ている。Enter を押すまで無言で、`setup` と打つとウィザードが始まる。
+XIAO では、このポートは設定後もシェルのままで、コマンドを打つまで無言である。
+YD-ESP32-S3 では、COM 側にも同じシェルが 115200 でログと一緒に出ている。
+Enter を押すまで無言で、`setup` と打つとウィザードが始まる。
 
 ```bash
 screen /dev/ttyACM0 115200
 ```
 
 DTR と RTS は、端末が開いたときの状態、つまり両方アサートのままにすること。
-このポートでは2本がチップのリセットとブートのピンにつながっていて、別々に動かすと
-ROM のダウンロードモードに入ってしまい、無言のまま何も返さなくなる。
-スクリプトから覗くときは `espflash monitor --port /dev/ttyACM0` が安全である。
+これらのポートでは、2 本がチップのリセットと起動モードの選択に使われる。
+別々に動かすとボードがリセットされ、ROM のダウンロードモードに入ることもある。
+そうなると無言のまま何も返さなくなる。
 
 ```text
 serial-over-tailnet 0.1.0 - setup mode
@@ -216,17 +226,24 @@ auth key を使う場合は `authkey tskey-auth-...` を打ってから `login` 
 | --- | --- |
 | `wifi <ssid> <pw>` | Wi-Fi を追加して接続する。複数登録でき、起動時と再接続時に一番強い既知の AP を選ぶ。 |
 | `wifi list`、`wifi forget <ssid>` | 登録済み Wi-Fi の一覧と削除。 |
-| `usbdrv <auto\|cdc\|ftdi\|cp210x\|ch34x>` | USB シリアル変換チップの指定。既定は VID と PID による自動判別。 |
-| `port <n>`、`baud <rate>` | 先頭の TCP ポート（既定 35930。対象の USB インターフェース n は port+n に出る）と対象のボーレート（既定 115200）。 |
+| `port <n>`、`baud <rate>` | TCP ポート（既定 35930。YD-ESP32-S3 では対象の USB インターフェース n が port+n に出る）と対象のボーレート（既定 115200）。 |
+| `usbdrv <auto\|cdc\|ftdi\|cp210x\|ch34x>` | YD-ESP32-S3 のみ。USB シリアル変換チップの指定。既定は VID と PID による自動判別。 |
 | `status`、`reset`、`reboot` | 状態表示、設定と鍵の消去、再起動。 |
 
-同じシェルは UART ポート（115200 bps、ログと共用）でも常時使える。
+XIAO では、シェルは常に USB ポートにある。
+そのため `setup` を含むどのコマンドも、いつでも実行できる。
+ログは UART0（ピン D6 が TX、D7 が RX、115200 bps）に出る。
+YD-ESP32-S3 では、同じシェルが COM ポート（115200 bps、ログと共用）で常時使える。
 Enter を押すとプロンプトが出る。
-BOOT を押しながら起動すると、再びセットアップモードになる。
+ファームウェアの起動時に BOOT を押していると、再びセットアップモードになる。
 
 ### 接続
 
-対象のシリアルインターフェースは 1 本ずつ別の TCP ポートに出る。ポート番号は先頭のポート（`port` で変えなければ 35930）に USB インターフェース番号を足したものである。
+XIAO ESP32S3 は、UART を 1 つの TCP ポートに出す。
+`port` で変えなければ 35930 である。
+
+YD-ESP32-S3 では、対象のシリアルインターフェースが 1 本ずつ別の TCP ポートに出る。
+ポート番号は先頭のポートに USB インターフェース番号を足したものである。
 どのインターフェースがシリアルかは機器を挿したときに記述子から読むので、設定は要らない。
 
 | 対象 | インターフェース | ポート |
@@ -239,10 +256,10 @@ BOOT を押しながら起動すると、再びセットアップモードにな
 Tailnet 上の任意の端末から、hostname か Tailnet アドレスのそのポートに、生の TCP か RFC 2217（Telnet）でつなぐ。
 
 ```bash
-socat -,rawer,escape=0x1d TCP:target-console:35933   # Ctrl-] で抜ける
-nc target-console 35933
-python -m serial.tools.miniterm rfc2217://target-console:35933 9600   # RFC 2217: クライアントが回線を設定する
-esptool --port rfc2217://target-console:35930 flash_id                 # DTR と RTS で ESP32 の対象をリセットする
+socat -,rawer,escape=0x1d TCP:target-console:35930   # Ctrl-] で抜ける
+nc target-console 35930
+python -m serial.tools.miniterm rfc2217://target-console:35930 9600   # RFC 2217: クライアントが回線を設定する
+esptool --port rfc2217://target-console:35930 flash_id                 # YD-ESP32-S3: DTR と RTS で ESP32 の対象をリセットする
 ```
 
 1 つのポートで同時に使えるのは 1 接続である。
@@ -256,16 +273,25 @@ pyserial の `rfc2217://` や esptool のように Telnet のネゴシエーシ�
 それ以外は生のセッションで、バイト列はそのまま双方向に流れ、プロトコルの付加はなく、ボーレートはアダプタ側の設定で決まる。
 `telnet` は、先に交渉を送る実装（netkit、inetutils）なら文字モードの RFC 2217 セッションになり、サーバーが先に話すのを待つ BSD 版は行モードの生セッションになる。
 クライアントの最初の 1 バイトが届く前に対象から来たバイトは、どちらの場合もそのまま送る。
+XIAO の UART には DTR と RTS の線がない（要求は受け付けるが何もしない）。
+ブレークは TX を Low に保って作り、マークパリティとスペースパリティは断る。
 
-ポートどうしは独立していて、USB インターフェースも busy 判定も回線の設定も別々で、あるポートの接続が別のポートを妨げることはない。
+YD-ESP32-S3 では、ポートどうしは独立していて、USB インターフェースも busy 判定も回線の設定も別々で、あるポートの接続が別のポートを妨げることはない。
 共通なのは USB 機器と Tailnet アドレスである。
-USB インターフェースは、そのポートにクライアントがつないでいる間だけ確保する。
 USB インターフェースは最初のクライアントが接続したときに claim し、クライアントが切れても保持する。誰もつないでいない間のターゲットの出力は捨てる。
 ESP32-S3 のホストコントローラのパイプは 8 本で、制御に 1 本、claim したインターフェース 1 つにつき 2 本（CDC-ACM は 3 本）使うので、FT4232H で claim できるのは 3 ポートまでである。claim は USB を抜くかアダプタを再起動するまで続く。4 本目のポートに来たクライアントには `usb: cannot open the interface: no free USB host pipe` と伝えて切断する。
 `status` はインターフェースとポートの一覧に、開いているものは回線設定を、claim 済みで空いているものは `claimed` を添える。
 
 ### 給電と配線
 
+**XIAO ESP32S3。**
+給電は USB-C から行う。
+充電器でも、PC でも、対象の USB ポートでもよい。
+対象から給電すると、対象の USB の電源が切れたときに XIAO も止まり、電源が入ってから Tailnet に参加するまで数十秒かかる。
+充電器から給電すれば、対象が再起動する間もつながったままである。
+対象とは「ボードを準備する」の表のとおり 3 本の線でつなぎ、XIAO の `3V3` ピンには何もつながない。
+
+**YD-ESP32-S3。**
 給電は COM 側の USB から行う。
 PC でも USB 充電器でも構わない。
 native 側は USB ホストとして対象につなぐポートで、対象のデバッグポートから電源は来ない前提である。
@@ -280,7 +306,7 @@ native 側から 5 V を出すには、裏面の `USB-OTG` パッドを短絡す
 
 ### 数秒ごとにリセットするボード
 
-COM 側のログに `rst:0x3 (RTC_SW_SYS_RST)` 付きの `ESP-ROM` バナーが 1〜4 秒ごとに出るときは、次の起動の冒頭の `last reset:` 行（または `status` の `Reset:`）を見る。
+ボードが再起動を繰り返すとき（YD-ESP32-S3 では、COM 側のログに `rst:0x3 (RTC_SW_SYS_RST)` 付きの `ESP-ROM` バナーが 1〜4 秒ごとに出る）は、`status` の `Reset:` か、次の起動のログの冒頭にある `last reset:` 行を見る。
 `brownout` は、Wi-Fi の送信中か対象のブリッジチップの起動中に電源電圧が下がったことを示す。
 直すのは電源である。ボードと対象のブリッジチップを同時に賄えるポートか充電器に、短いケーブルでつなぐ。
 IDF 自身の "Brownout detector was triggered" 行はログに残らないことがあり、ROM のバナーは `reboot` の後と同じに見える。
@@ -290,7 +316,7 @@ IDF 自身の "Brownout detector was triggered" 行はログに残らないこ�
 ## ビルドと書き込み
 
 前提は、`espup` で導入した `esp` ツールチェーン、`ldproxy`、`espflash` である。
-ESP-IDF v5.3.3 とコンポーネント `espressif/usb_host_cdc_acm` は、初回ビルド時に `firmware/.embuild/` へ自動で取得される（数 GB、数分）。
+ESP-IDF v5.5.5 とコンポーネント `espressif/usb_host_cdc_acm` は、初回ビルド時に `firmware/.embuild/` へ自動で取得される（数 GB、数分）。
 
 ```bash
 # ホスト側の単体テストと検証ツール
@@ -298,25 +324,28 @@ cargo test
 cargo run -p hostnode -- probe-control                      # 制御プレーンの疎通（鍵なし登録で AuthURL が返れば良い）
 cargo run -p hostnode -- run --hostname tsnode-test        # 実 Tailnet に参加して echo サーバを公開（承認 URL を表示）
 
-# ファームウェア
+# ファームウェア（n16r8 のイメージ。ほかは「ボードとイメージ」を参照）
 cd firmware
 cargo build --release
-cargo run --release      # espflash flash --monitor --flash-size 16mb --partition-table partitions.csv
 ```
 
 `~/export-esp.sh` は source しない。
 gcc と clang は esp-idf-sys が `.embuild/` に導入したものを使い、espup の xtensa gcc が PATH の先頭にあるとリンクに失敗する。
 
 パーティション表は `firmware/partitions.csv`（factory 6 MB）である。
-esptool で書く場合は `tools/mkimage.sh <型番> release` で `dist/<型番>/` にバイナリを作る。
+書き込むには、`tools/mkimage.sh <イメージ> release` で `dist/<イメージ>/` にバイナリを作り、esptool で書く。
 
 ```bash
-cd firmware && tools/mkimage.sh n16r8 release
+cd firmware && tools/mkimage.sh xiao-s3 release
 PY=$(ls -d .embuild/espressif/python_env/*/bin/python | head -1)
 $PY -m esptool --chip esp32s3 --port /dev/ttyACM0 --baud 921600 write_flash \
-  0x0 dist/n16r8/bootloader.bin 0x8000 dist/n16r8/partition-table.bin 0x10000 dist/n16r8/app.bin
+  0x0 dist/xiao-s3/bootloader.bin 0x8000 dist/xiao-s3/partition-table.bin 0x10000 dist/xiao-s3/app.bin
 ```
-runner はボードの UART ポートを `/dev/ttyACM0` に固定しているので、環境に合わせて `.cargo/config.toml` を直す。
+
+`/dev/ttyACM0` は Linux でのボードのポートである。
+環境に合わせて読み替える。
+書き込みは上のとおり esptool で行う。
+`espflash` はこのファームウェアのイメージを受け付けない。
 `hostnode run` は鍵を `hostnode-state.json` に平文で保存する。
 
 ## 設計上の判断
@@ -328,6 +357,7 @@ runner はボードの UART ポートを `/dev/ttyACM0` に固定しているの
 - 直接経路は disco の ping と pong、call-me-maybe で確立する。相手から届いた認証済み UDP パケットの送信元も経路として採用する。
 - WireGuard のタイムスタンプは、システム時計と control 時刻との差分、および SNTP で補正する。
 - ネットワーク系スレッドのスタックは PSRAM に置き、フラッシュを書く制御スレッドだけ内部 RAM に置く。
+- ヒープは PSRAM を先に使い、Rust のコードはハードウェアの比較交換命令を使わずにビルドする（`target-feature=-s32c1i`）。ESP32-S3 では、PSRAM 上のワードに対するこの命令が 2 つのコアの間でアトミックにならず、`Mutex` と `Arc` が壊れた。アトミック操作は ESP-IDF の `__atomic_*` 関数を通す。
 - USB ホストは CDC-ACM ホストドライバの「bulk エンドポイントが 2 本あれば開く」フォールバックに乗せ、FTDI、CP210x、CH34x はチップ固有の設定だけをベンダー制御転送で送る。
 - セッションをまたいでインターフェースを claim したままにするのは USB のデータトグルのためである。ホストが作るパイプは DATA0 から始まるが、デバイスは各エンドポイントのトグルを前のセッションから引き継ぐ。セッションごとに claim し直していたときは、奇数パケットのセッションの次のセッションで最初のパケットが ACK されたまま捨てられ、ホストにはエラーも出ずに最初の打鍵が消えていた。CLEAR_FEATURE(ENDPOINT_HALT) でデバイス側のトグルを戻す方法も試したが Debug Probe（TinyUSB）では効かないので、パイプを保持する方にした。
 - デバイスがつながっている間は claim を解放しないので、4 本目のポートが空いているポートのパイプを取ることはできない。IN ポーリングに答え続けるデバイス（FTDI は 2 ms ごとに答える）のインターフェースを close すると、CDC ドライバのタスクと競合する。ドライバがパイプを止めて再度有効にし、インターフェースを解放する間にタスクがポーリングを再投入し、解放かホストコントローラの割り込みハンドラが 10 回に 1 回ほど abort する。閉じる側のスレッドで解放を再試行しパイプを止め直す方法（リンカの `--wrap`）も ESP-IDF v5.3.5（espressif/esp-idf#17707）も試したが、それでも落ちた。
@@ -335,7 +365,7 @@ runner はボードの UART ポートを `/dev/ttyACM0` に固定しているの
 
 ## スコープ外
 
-Secure Boot と Flash 暗号化、OTA、Web 管理画面、複数同時接続、USB ハブ、専用基板は扱っていない。
+Secure Boot と Flash 暗号化、OTA、Web 管理画面、複数同時接続、USB ハブは扱っていない。
 
 ## ライセンス
 

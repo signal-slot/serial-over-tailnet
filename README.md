@@ -22,39 +22,42 @@ Working end to end:
 
 - Wi-Fi setup through the wizard and joining a tailnet with the approval URL.
 - `tailscale ping` from another node, both via DERP and over a direct path.
-- Console access to a Raspberry Pi Debug Probe (CDC-ACM) and a Toradex Dahlia (FT4232H).
-- RFC 2217 sessions against both: baud rate and framing changes, DTR and RTS, break and purge from pyserial.
+- With a XIAO ESP32S3: the console of a Raspberry Pi 5 over its 3.3 V UART (the 3-pin debug connector).
+- With a YD-ESP32-S3: console access to a Raspberry Pi Debug Probe (CDC-ACM) and a Toradex Dahlia (FT4232H) over USB.
+- RFC 2217 sessions against both USB targets: baud rate and framing changes, DTR and RTS, break and purge from pyserial.
 - On the FT4232H, three ports claimed at once and a client on the fourth port refused.
 - Recovery after adapter reboot, Wi-Fi reconnection and USB replug.
-- On a Seeed Studio XIAO ESP32S3, the console of a Raspberry Pi 5 over a 3.3 V UART instead of USB (see "Seeed Studio XIAO ESP32S3" below).
 
 Not yet:
 
 - Headless registration with an auth key.
+- RFC 2217 sessions on the XIAO's UART (implemented, not tried against a client).
 - CP210x, CH340/CH341, and non-H-series FTDI chips such as the FT232R.
 - Recovery after a reboot of the target SBC, an internet outage, or an unreachable control server.
 - Long-running operation, behaviour after node key expiry (180 days by default), and reboots triggered by the task watchdog.
 - esptool through RFC 2217 (its DTR and RTS sequence is tested on the host with `cargo run -p adapter-core --example rfc2217_sim`).
 
-### Module variants
+### Boards and images
 
-Flash size and PSRAM mode are build-time settings, so CI builds one image per ESP32-S3 module variant (`firmware/variants/`).
-PSRAM is required: network thread stacks and TLS buffers live there.
+Flash size and PSRAM mode are build-time settings, so CI builds one image per board and module (`firmware/variants/`).
+PSRAM is required: network thread stacks, TLS buffers and most of the heap live there.
 
-| Variant | Flash | PSRAM | Status |
-| --- | --- | --- | --- |
-| N16R8 | 16 MB | 8 MB octal | supported |
-| N8R8 | 8 MB | 8 MB octal | built |
-| N8R2 | 8 MB | 2 MB quad | supported |
-| N4, N8, N16 (no PSRAM) | | none | not supported |
+| Image | Board | Flash | PSRAM | Status |
+| --- | --- | --- | --- | --- |
+| `xiao-s3` | Seeed Studio XIAO ESP32S3 | 8 MB | 8 MB octal | supported |
+| `n16r8` | YD-ESP32-S3 with an N16R8 module | 16 MB | 8 MB octal | supported |
+| `n8r2` | YD-ESP32-S3 with an N8R2 module | 8 MB | 2 MB quad | supported |
+| `n8r8` | YD-ESP32-S3 with an N8R8 module | 8 MB | 8 MB octal | built |
+| | modules without PSRAM (N4, N8, N16) | | none | not supported |
 
-N16R8, N8R8 and N8R2 are the variants found on the YD-ESP32-S3 board.
-The Seeed Studio XIAO ESP32S3 (8 MB flash, 8 MB octal PSRAM) has its own image, `xiao-s3`, built with `--features board-xiao-s3`.
-
-To build a variant locally, point esp-idf-sys at its defaults file and pass the variant to the image script:
+To build an image locally, point esp-idf-sys at its defaults file and pass its name to the image script.
+The XIAO's image also needs its feature:
 
 ```bash
 cd firmware
+ESP_IDF_SDKCONFIG_DEFAULTS="sdkconfig.defaults;variants/xiao-s3.defaults" cargo build --release --features board-xiao-s3
+tools/mkimage.sh xiao-s3 release
+
 ESP_IDF_SDKCONFIG_DEFAULTS="sdkconfig.defaults;variants/n8r2.defaults" cargo build --release
 tools/mkimage.sh n8r2 release
 ```
@@ -66,8 +69,10 @@ tools/mkimage.sh n8r2 release
 | `crates/tsnode` | Tailscale node: control plane (ts2021 Noise and a minimal HTTP/2), WireGuard, DERP, disco, STUN, TCP termination with smoltcp. Runs on a host and on ESP-IDF. |
 | `crates/adapter-core` | Interactive setup shell. I/O and device operations are traits, so the wizard is unit-tested on the host. |
 | `tools/hostnode` | Runs tsnode on Linux for verification: joins a real tailnet and serves an echo server. |
-| `firmware` | ESP32-S3 firmware (esp-idf-svc): setup console, USB host (CDC-ACM, FTDI, CP210x, CH34x), Wi-Fi, Tailscale node, TCP bridge. |
+| `firmware` | ESP32-S3 firmware (esp-idf-svc): setup console, UART bridge (XIAO ESP32S3), USB host (YD-ESP32-S3: CDC-ACM, FTDI, CP210x, CH34x), Wi-Fi, Tailscale node, TCP bridge. |
 | `hardware/case` | 3D-printed case for the YD-ESP32-S3: OpenSCAD source and ready-to-print STLs, with and without pin headers ([README](hardware/case/README.md)). |
+| `hardware/xiao-carrier` | Carrier board for the XIAO ESP32S3 with level translation and a 4-pin header; designed, not made ([README](hardware/xiao-carrier/README.md)). |
+| `hardware/board` | Our own adapter board around the ESP32-S3-MINI-1; ordered, not yet verified ([README](hardware/board/README.md)). |
 
 tsnode is split into these modules.
 
@@ -140,33 +145,34 @@ See "Power and wiring" below for the safety rule that follows from it.
 ### Flash from a browser
 
 Open [signal-slot.github.io/serial-over-tailnet](https://signal-slot.github.io/serial-over-tailnet/) in Chrome or Edge to flash and configure the board without installing anything.
-The page opens the board's COM port (CH343, 1a86:55d3) or its USB Serial/JTAG port (303a:1001) with WebSerial and writes the CI-built binaries with ESP Web Tools (esptool-js).
+The page opens the board's serial port with WebSerial and writes the CI-built binaries with ESP Web Tools (esptool-js).
 A terminal on the same page runs the setup wizard.
 It works on Windows 10 and later, macOS, Linux and ChromeOS; it does not work in Firefox, Safari or on phones.
-Connect the COM port: it flashes through the board's auto-download circuit, carries the boot log, and the target can stay plugged into the native port.
-The native USB port works too and starts the wizard as soon as a terminal opens, but it disappears when setup completes and the port becomes the USB host.
-If the operating system does not list the COM port, use the native port instead.
 
-Pick the module variant on the page from the marking on the module's metal can (for example `ESP32-S3-N16R8`).
-CI (GitHub Actions) builds every variant on each push. Tags matching `v*` also attach `serial-over-tailnet-<variant>.bin` (bootloader, partition table and app merged into one file) to a release.
+Choose the board at the top of the page.
+
+- **XIAO ESP32S3**: connect its USB-C port to the PC. It shows up as `USB JTAG/serial debug unit` (303a:1001). If no port appears, unplug it, hold the `B` (BOOT) button and plug it in again.
+- **YD-ESP32-S3**: choose the module from the marking on its metal can (for example `ESP32-S3-N16R8`) and connect the `COM` port (CH343, 1a86:55d3). It flashes through the board's auto-download circuit, carries the boot log, and the target can stay plugged into the native port. The native port (303a:1001) works too and starts the wizard as soon as a terminal opens, but it disappears when setup completes and the port becomes the USB host; use it if the operating system does not list the COM port.
+
+CI (GitHub Actions) builds every image on each push. Tags matching `v*` also attach `serial-over-tailnet-<image>.bin` (bootloader, partition table and app merged into one file) to a release.
 The merged file can be written with `esptool write_flash 0x0`, but it also overwrites the NVS area with 0xFF, which erases the configuration and registration.
 Updates from the page write only the three regions and keep the configuration.
 
 ### Initial setup
 
-An unconfigured board plugged into a PC through the native USB port shows up as a USB serial port (Espressif USB JTAG/serial, 303a:1001).
+An unconfigured board plugged into a PC shows up as a USB serial port (Espressif USB JTAG/serial, 303a:1001): the XIAO's only port, the YD-ESP32-S3's native port.
 Open it in a terminal and press Enter to start the wizard.
-The COM port carries the same shell at 115200 together with the log output; it stays quiet until Enter, and `setup` starts the wizard there.
+On the XIAO this port stays the shell after setup too, quiet until a command is typed.
+On the YD-ESP32-S3 the COM port carries the same shell at 115200 together with the log output; it stays quiet until Enter, and `setup` starts the wizard there.
 
 ```bash
 screen /dev/ttyACM0 115200
 ```
 
 Leave DTR and RTS as a terminal leaves them, both asserted.
-On this port they are wired to the chip's reset and boot pins, so a tool that
-drives them apart resets the board into the ROM download mode, where it goes
-quiet and answers nothing. `espflash monitor --port /dev/ttyACM0` is the safe
-way to watch the port from a script.
+On these ports they reset the chip and select its boot mode, so a tool that
+drives them apart resets the board, possibly into the ROM download mode, where
+it goes quiet and answers nothing.
 
 ```text
 serial-over-tailnet 0.1.0 - setup mode
@@ -196,17 +202,19 @@ The main commands are listed below; `help` prints the full list.
 | --- | --- |
 | `wifi <ssid> <pw>` | Add a Wi-Fi network and connect. Several can be stored; the strongest known AP is chosen at boot and on reconnect. |
 | `wifi list`, `wifi forget <ssid>` | List and remove stored networks. |
-| `usbdrv <auto\|cdc\|ftdi\|cp210x\|ch34x>` | USB-serial bridge chip. The default detects it from VID and PID. |
-| `port <n>`, `baud <rate>` | First TCP port (default 35930; USB interface n of the target is served on port+n) and baud rate of the target (default 115200). |
+| `port <n>`, `baud <rate>` | TCP port (default 35930; on the YD-ESP32-S3, USB interface n of the target is served on port+n) and baud rate of the target (default 115200). |
+| `usbdrv <auto\|cdc\|ftdi\|cp210x\|ch34x>` | YD-ESP32-S3 only: USB-serial bridge chip. The default detects it from VID and PID. |
 | `status`, `reset`, `reboot` | Show status, erase configuration and keys, reboot. |
 
-The same shell is always available on the UART port (115200 bps, shared with the log).
-Press Enter to get a prompt.
-Holding BOOT while powering on enters setup mode again.
+On the XIAO the shell is always on the USB port, so any command, `setup` included, can be run at any time; the log goes to UART0 on pins D6 (TX) and D7 (RX) at 115200 bps.
+On the YD-ESP32-S3 the same shell is always available on the COM port (115200 bps, shared with the log): press Enter to get a prompt.
+Holding BOOT while the firmware starts enters setup mode again.
 
 ### Connecting
 
-Every serial interface of the target is served on its own TCP port: the first port (35930 unless `port` changed it) plus the USB interface number.
+The XIAO ESP32S3 serves its UART on one TCP port: 35930, unless `port` changed it.
+
+With a YD-ESP32-S3, every serial interface of the target is served on its own TCP port: the first port plus the USB interface number.
 Which interfaces those are is read from the device when it is plugged in, so nothing has to be configured.
 
 | Target | Interface | Port |
@@ -219,10 +227,10 @@ Which interfaces those are is read from the device when it is plugged in, so not
 From any machine on the tailnet, open a raw TCP connection to that port of the hostname or tailnet address, or an RFC 2217 (Telnet) one.
 
 ```bash
-socat -,rawer,escape=0x1d TCP:target-console:35933   # Ctrl-] to exit
-nc target-console 35933
-python -m serial.tools.miniterm rfc2217://target-console:35933 9600   # RFC 2217: the client sets the line
-esptool --port rfc2217://target-console:35930 flash_id                 # DTR and RTS reset an ESP32 target
+socat -,rawer,escape=0x1d TCP:target-console:35930   # Ctrl-] to exit
+nc target-console 35930
+python -m serial.tools.miniterm rfc2217://target-console:35930 9600   # RFC 2217: the client sets the line
+esptool --port rfc2217://target-console:35930 flash_id                 # YD-ESP32-S3: DTR and RTS reset an ESP32 target
 ```
 
 One connection at a time is served per port.
@@ -236,8 +244,9 @@ Flow control is reported as none, and modem-state and line-state notifications a
 Anything else is a raw session: bytes flow unchanged in both directions, there is no protocol on top, and the baud rate is the adapter's setting.
 A `telnet` client that negotiates first (netkit, inetutils) gets an RFC 2217 session in character mode; the BSD one waits for the server to speak first and so gets a raw session in line mode.
 Bytes the target sends before the client's first byte go out unframed in either case.
+On the XIAO's UART there are no DTR and RTS lines (requests are accepted and do nothing), a break is made by holding TX low, and mark and space parity are refused.
 
-The ports are independent: each has its own USB interface, its own busy state and its own line settings, and a client on one port does not block another.
+With a YD-ESP32-S3 the ports are independent: each has its own USB interface, its own busy state and its own line settings, and a client on one port does not block another.
 They share one USB device and one tailnet address.
 The USB interface is claimed when the first client connects to its port and stays claimed after the client leaves; output from the target is dropped while nobody is connected.
 The ESP32-S3's host controller has eight pipes, one for control and two per claimed interface (three for CDC-ACM), so at most three ports of an FT4232H can be claimed, and the claims last until the device is unplugged or the adapter reboots. A client on a fourth port is told `usb: cannot open the interface: no free USB host pipe` and closed.
@@ -245,6 +254,12 @@ The ESP32-S3's host controller has eight pipes, one for control and two per clai
 
 ### Power and wiring
 
+**XIAO ESP32S3.**
+Power it through its USB-C port: a charger, a PC, or a USB port of the target.
+Powered from the target, it goes down when the target's USB power does and needs some tens of seconds after power-up to join the tailnet; from a charger it stays reachable while the target reboots.
+The target is connected with three wires, as in the table under "Prepare the board"; the XIAO's `3V3` pin stays unconnected.
+
+**YD-ESP32-S3.**
 Power the board through the COM-side USB port, from a PC or a USB charger.
 The native port is the USB host port for the target; the target's debug port is not expected to supply power.
 
@@ -256,7 +271,7 @@ If the target is a CDC-ACM or FTDI-style bridge chip, that chip is usually bus-p
 
 ### A board that resets every few seconds
 
-If the COM port log shows a new `ESP-ROM` banner every 1 to 4 seconds with `rst:0x3 (RTC_SW_SYS_RST)`, read the line `last reset:` near the top of the next boot (or `Reset:` in `status`).
+If the board keeps restarting (on the YD-ESP32-S3 the COM port log shows a new `ESP-ROM` banner every 1 to 4 seconds with `rst:0x3 (RTC_SW_SYS_RST)`), read `Reset:` in `status`, or the line `last reset:` near the top of the next boot's log.
 `brownout` means the supply voltage dropped while Wi-Fi was transmitting or the target's bridge chip was starting.
 The fix is the power: a port or charger that can supply the board and the target's bridge chip together, with a short cable.
 The IDF's own "Brownout detector was triggered" line can be missing from the log, and the ROM banner looks the same as after `reboot`.
@@ -266,7 +281,7 @@ The `Password length is zero` warning in older firmware came from a placeholder 
 ## Building and flashing
 
 Prerequisites are the `esp` toolchain installed with `espup`, `ldproxy` and `espflash`.
-ESP-IDF v5.3.3 and the `espressif/usb_host_cdc_acm` component are fetched into `firmware/.embuild/` on the first build (several GB, several minutes).
+ESP-IDF v5.5.5 and the `espressif/usb_host_cdc_acm` component are fetched into `firmware/.embuild/` on the first build (several GB, several minutes).
 
 ```bash
 # host-side unit tests and verification tool
@@ -274,26 +289,26 @@ cargo test
 cargo run -p hostnode -- probe-control                      # control-plane check (an AuthURL from a keyless registration is enough)
 cargo run -p hostnode -- run --hostname tsnode-test        # join a real tailnet and serve an echo server (prints the approval URL)
 
-# firmware
+# firmware (the n16r8 image; see "Boards and images" for the others)
 cd firmware
 cargo build --release
-cargo run --release      # espflash flash --monitor --flash-size 16mb --partition-table partitions.csv
 ```
 
 Do not source `~/export-esp.sh`.
 gcc and clang come from what esp-idf-sys installs into `.embuild/`; with espup's Xtensa gcc first on PATH the link fails.
 
 The partition table is `firmware/partitions.csv` (6 MB factory app).
-To flash with esptool, build the binaries into `dist/<variant>/` with `tools/mkimage.sh <variant> release`.
+To flash, build the binaries into `dist/<image>/` with `tools/mkimage.sh <image> release` and write them with esptool.
 
 ```bash
-cd firmware && tools/mkimage.sh n16r8 release
+cd firmware && tools/mkimage.sh xiao-s3 release
 PY=$(ls -d .embuild/espressif/python_env/*/bin/python | head -1)
 $PY -m esptool --chip esp32s3 --port /dev/ttyACM0 --baud 921600 write_flash \
-  0x0 dist/n16r8/bootloader.bin 0x8000 dist/n16r8/partition-table.bin 0x10000 dist/n16r8/app.bin
+  0x0 dist/xiao-s3/bootloader.bin 0x8000 dist/xiao-s3/partition-table.bin 0x10000 dist/xiao-s3/app.bin
 ```
 
-The cargo runner pins the board's UART port to `/dev/ttyACM0`; adjust `.cargo/config.toml` for your machine.
+`/dev/ttyACM0` is the board's port on Linux; use the one your machine gives it.
+Flash with esptool as above: `espflash` does not accept this firmware's image.
 `hostnode run` stores its keys in plain text in `hostnode-state.json`.
 
 ## Design decisions
@@ -305,6 +320,7 @@ The cargo runner pins the board's UART port to `/dev/ttyACM0`; adjust `.cargo/co
 - Direct paths are established with disco ping/pong and call-me-maybe. The source of an authenticated UDP packet from a peer is also adopted as a path.
 - WireGuard timestamps are corrected with the offset between the system clock and control time, and with SNTP.
 - Network thread stacks live in PSRAM; only the control thread, which writes flash, keeps an internal-RAM stack.
+- The heap prefers PSRAM, and Rust code is built without the hardware compare-and-swap instruction (`target-feature=-s32c1i`): on the ESP32-S3 that instruction is not atomic between the two cores for a word in PSRAM, which broke `Mutex` and `Arc`. Atomics go through ESP-IDF's `__atomic_*` functions instead.
 - The USB host relies on the CDC-ACM host driver's fallback of opening any interface with two bulk endpoints; FTDI, CP210x and CH34x get only their chip-specific setup through vendor control transfers.
 - The interface stays claimed between sessions because of the USB data toggle. A pipe the host creates starts at DATA0, while the device keeps the toggle of each endpoint from the session before. Claiming the interface per session made the device acknowledge and drop the first packet of every other session, with no error on the host: the first keystroke vanished. Asking the device to reset its toggles with CLEAR_FEATURE(ENDPOINT_HALT) was tried and does not work on the Debug Probe (TinyUSB), so the pipes are kept instead.
 - A claim is not released while the device is attached, so a fourth port cannot take the pipes of an idle one. Closing an interface of a device that keeps answering IN polls (an FTDI chip does, every 2 ms) races with the CDC driver's task: the driver halts and clears the pipe and releases the interface while its task resubmits the poll, and the release or the host controller's interrupt handler aborts the firmware about one close in ten. Retrying the release and halting the pipes again from the closing thread (through a linker `--wrap`) and ESP-IDF v5.3.5 (espressif/esp-idf#17707) were tried and still crashed.
@@ -312,7 +328,7 @@ The cargo runner pins the board's UART port to `/dev/ttyACM0`; adjust `.cargo/co
 
 ## Out of scope
 
-Secure Boot and flash encryption, OTA, a web management UI, multiple simultaneous connections, USB hubs and a dedicated PCB.
+Secure Boot and flash encryption, OTA, a web management UI, multiple simultaneous connections and USB hubs.
 
 ## License
 
