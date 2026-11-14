@@ -73,7 +73,7 @@ tools/mkimage.sh n8r2 release
 | `firmware` | ESP32-S3 ファームウェア（esp-idf-svc）。設定コンソール、UART の中継（XIAO ESP32S3）、USB ホスト（YD-ESP32-S3。CDC-ACM、FTDI、CP210x、CH34x）、Wi-Fi、Tailscale ノード、TCP ブリッジ。 |
 | `hardware/case` | YD-ESP32-S3 用の 3D プリントケース。OpenSCAD のソースと、そのまま印刷できる STL（ピンヘッダの有無の 2 種類）がある（[README](hardware/case/README-ja.md)）。 |
 | `hardware/xiao-carrier` | XIAO ESP32S3 用のキャリア基板。レベル変換と 4 ピンのヘッダを持つ。設計済みで未製作（[README](hardware/xiao-carrier/README-ja.md)）。 |
-| `hardware/board` | ESP32-S3-MINI-1 を使う独自のアダプタ基板。発注済みで未検証（[README](hardware/board/README.md)）。 |
+| `hardware/board` | ESP32-S3-MINI-1 を使う独自のアダプタ基板。発注済みで未検証（[README](hardware/board/README-ja.md)）。 |
 
 tsnode の内部は次のモジュールに分かれる。
 
