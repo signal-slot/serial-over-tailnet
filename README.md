@@ -3,13 +3,14 @@
 [日本語](README-ja.md)
 
 An ESP32-S3 board with PSRAM that joins a Tailscale network (a tailnet) on its own and bridges the serial console of a target SBC to a TCP port on the tailnet.
-The console is a USB serial interface of the target or, on the Seeed Studio XIAO ESP32S3, a 3.3 V UART.
+The console is a 3.3 V UART of the target (with a Seeed Studio XIAO ESP32S3) or one of its USB serial interfaces (with a YD-ESP32-S3).
 The project was called usb-serial-over-tailscale until November 2026.
 
-![A laptop reaches the target board's serial console through Tailscale; the ESP32-S3 is powered from a USB charger and plugged into the target's USB port](web/overview.webp)
+![A laptop reaches the target board's serial console through Tailscale; the XIAO ESP32S3 is powered from a USB charger and wired to the target's 3-pin debug connector with three wires](web/overview-xiao.webp)
 
 ```text
-Remote PC ──Tailscale / TCP:35930+n──▶ ESP32-S3 ──USB host──▶ serial interface n of the target SBC
+Remote PC ──Tailscale / TCP:35930────▶ XIAO ESP32S3 ──UART──────▶ UART console of the target SBC
+Remote PC ──Tailscale / TCP:35930+n──▶ YD-ESP32-S3 ───USB host──▶ serial interface n of the target SBC
 ```
 
 Everything a Tailscale node needs (control protocol, WireGuard, DERP, NAT traversal) is implemented in Rust in this repository.
@@ -88,12 +89,40 @@ Two boards can be used; which one depends on where the target's console is.
 
 | Board | Bridges | Soldering |
 | --- | --- | --- |
-| YD-ESP32-S3 | a USB serial interface of the target (its debug USB port) | required (the `USB-OTG` pad on the back) |
 | Seeed Studio XIAO ESP32S3 | a 3.3 V UART of the target (pins or a debug connector) | none on a board that comes with pin headers |
+| YD-ESP32-S3 | a USB serial interface of the target (its debug USB port) | required (the `USB-OTG` pad on the back) |
 
-The rest of this section prepares the YD-ESP32-S3.
-For the XIAO ESP32S3, its preparation and wiring are in "[Seeed Studio XIAO ESP32S3](#seeed-studio-xiao-esp32s3)" below.
-Flashing and the initial setup are the same for both.
+#### Seeed Studio XIAO ESP32S3
+
+Buy a [Seeed Studio XIAO ESP32S3](https://www.seeedstudio.com/XIAO-ESP32S3-p-5627.html).
+It has one USB-C port and no USB host role here: it bridges a **3.3 V UART** instead of a USB serial adapter, on port 35930.
+Use it when the target has a UART on pins or a debug connector, such as the 3-pin debug connector of a Raspberry Pi 5.
+
+| XIAO pin | Role | Connect to |
+| --- | --- | --- |
+| `GND` | ground | the target's GND |
+| `3V3` | not used | leave unconnected |
+| `D10` | TX (out of the XIAO) | the target's RX |
+| `D9` | RX (into the XIAO) | the target's TX |
+
+The four pins are next to each other on one side of the board (from the USB-C end: 5V, GND, 3V3, D10, D9, D8, D7).
+On a board that comes with pin headers, jumper wires plug straight onto them; on a bare board, solder a 4-pin socket or pin header there.
+The UART is 3.3 V only: do not connect 5 V or RS-232 signals, and put a level translator in between for a 1.8 V target.
+Attach the antenna that comes with the board.
+
+On the installer page it is the first entry under "Choose your board".
+If no serial port appears, hold the `B` (BOOT) button while plugging the board in.
+The USB port stays the setup console after setup as well (there is no second port), and it powers the board: a charger or a USB port of the target will do.
+The baud rate is set with `baud` (115200 by default) or by an RFC 2217 client; there are no DTR and RTS lines.
+
+Verified with the plain XIAO ESP32S3 on a Raspberry Pi 5; the Sense and Plus versions have not been tried.
+The firmware limits the Wi-Fi transmit power to 15 dBm on this board: at 19.5 dBm and above it did not get past association with two access points, and at 18 dBm and below it did.
+In Japan the board is sold with 技適: construction design certification number 217-230892, as [Akizuki Denshi lists it](https://akizukidenshi.com/catalog/g/g118078/). Elsewhere, check the marking on the board and the rules that apply to you.
+[`hardware/xiao-carrier/`](hardware/xiao-carrier/) is a small carrier board for it (not made yet).
+
+#### YD-ESP32-S3
+
+![A laptop reaches the target board's serial console through Tailscale; the YD-ESP32-S3 is powered from a USB charger and plugged into the target's USB port](web/overview.webp)
 
 Buy the [**YD-ESP32-S3** from VCC-GND Studio (its page on AliExpress)](https://www.aliexpress.com/item/1005004025123046.html).
 On that page choose **N16R8** or **N8R2**: those two are supported.
@@ -224,37 +253,6 @@ The pad bypasses the diode between the board's 5 V and the native port, so the 5
 For flashing and setup, connect the COM port to the PC; if you use the native port for that instead, connect only that one.
 In normal operation, connect the COM port to power and the native port to the target.
 If the target is a CDC-ACM or FTDI-style bridge chip, that chip is usually bus-powered and needs this 5 V.
-
-### Seeed Studio XIAO ESP32S3
-
-The XIAO ESP32S3 is a second board the firmware runs on.
-
-![A laptop reaches the target board's serial console through Tailscale; the XIAO ESP32S3 is powered from a USB charger and wired to the target's 3-pin debug connector with three wires](web/overview-xiao.webp)
-
-It has one USB-C port and no USB host role here: it bridges a **3.3 V UART** instead of a USB serial adapter, on port 35930.
-Use it when the target has a UART on pins or a debug connector, such as the 3-pin debug connector of a Raspberry Pi 5.
-
-| XIAO pin | Role | Connect to |
-| --- | --- | --- |
-| `GND` | ground | the target's GND |
-| `3V3` | not used | leave unconnected |
-| `D10` | TX (out of the XIAO) | the target's RX |
-| `D9` | RX (into the XIAO) | the target's TX |
-
-The four pins are next to each other on one side of the board (from the USB-C end: 5V, GND, 3V3, D10, D9, D8, D7).
-On a board that comes with pin headers, jumper wires plug straight onto them; on a bare board, solder a 4-pin socket or pin header there.
-The UART is 3.3 V only: do not connect 5 V or RS-232 signals, and put a level translator in between for a 1.8 V target.
-Attach the antenna that comes with the board.
-
-Flash it from the same page: choose "Seeed Studio XIAO ESP32S3" under "Board".
-If no serial port appears, hold the `B` (BOOT) button while plugging the board in.
-The USB port stays the setup console after setup as well (there is no second port), and it powers the board: a charger or a USB port of the target will do.
-The baud rate is set with `baud` (115200 by default) or by an RFC 2217 client; there are no DTR and RTS lines.
-
-Verified with the plain XIAO ESP32S3 on a Raspberry Pi 5; the Sense and Plus versions have not been tried.
-The firmware limits the Wi-Fi transmit power to 15 dBm on this board: at 19.5 dBm and above it did not get past association with two access points, and at 18 dBm and below it did.
-In Japan the board is sold with 技適: construction design certification number 217-230892, as [Akizuki Denshi lists it](https://akizukidenshi.com/catalog/g/g118078/). Elsewhere, check the marking on the board and the rules that apply to you.
-[`hardware/xiao-carrier/`](hardware/xiao-carrier/) is a small carrier board for it (not made yet).
 
 ### A board that resets every few seconds
 

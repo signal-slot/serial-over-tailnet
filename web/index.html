@@ -42,19 +42,19 @@
 <p class="choose">
   <label><strong data-i18n="board_choose"></strong>
     <select id="board" class="variant">
+      <optgroup label="Seeed Studio (UART)">
+        <option value="xiao-s3">Seeed Studio XIAO ESP32S3</option>
+      </optgroup>
       <optgroup label="YD-ESP32-S3 (USB)">
         <option value="n16r8">YD-ESP32-S3 N16R8 (16 MB, 8 MB PSRAM)</option>
         <option value="n8r8">YD-ESP32-S3 N8R8 (8 MB, 8 MB PSRAM)</option>
         <option value="n8r2">YD-ESP32-S3 N8R2 (8 MB, 2 MB PSRAM)</option>
       </optgroup>
-      <optgroup label="Seeed Studio (UART)">
-        <option value="xiao-s3">Seeed Studio XIAO ESP32S3</option>
-      </optgroup>
     </select>
   </label>
 </p>
 
-<p><img id="overview" src="overview.webp" alt="" width="1400" height="700" style="width:100%;height:auto;border-radius:6px"></p>
+<p><img id="overview" src="overview-xiao.webp" alt="" width="1400" height="700" style="width:100%;height:auto;border-radius:6px"></p>
 
 <div class="note unsupported" data-i18n="unsupported"></div>
 
@@ -77,7 +77,7 @@
   <li data-i18n-html="flash_3"></li>
 </ol>
 <p>
-  <esp-web-install-button id="install" manifest="manifest-n16r8.json"></esp-web-install-button>
+  <esp-web-install-button id="install" manifest="manifest-xiao-s3.json"></esp-web-install-button>
 </p>
 <p class="note yd-only" data-i18n="module_note"></p>
 
@@ -305,7 +305,7 @@ document.getElementById('lang').addEventListener('change', (ev) => applyLanguage
 // install, which also decides the board the page describes.
 const variantSelects = [...document.querySelectorAll('select.variant')];
 function applyVariant(v) {
-  if (![...variantSelects[0].options].some((o) => o.value === v)) v = 'n16r8';
+  if (![...variantSelects[0].options].some((o) => o.value === v)) v = 'xiao-s3';
   variantSelects.forEach((sel) => { sel.value = v; });
   board = v === 'xiao-s3' ? 'xiao' : 'yd';
   document.documentElement.classList.toggle('board-xiao', board === 'xiao');
