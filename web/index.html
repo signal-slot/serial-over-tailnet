@@ -77,18 +77,6 @@
   <li data-i18n-html="flash_3"></li>
 </ol>
 <p>
-  <label><span data-i18n="board"></span>
-    <select id="variant" class="variant">
-      <optgroup label="YD-ESP32-S3 (USB)">
-        <option value="n16r8">YD-ESP32-S3 N16R8 (16 MB, 8 MB PSRAM)</option>
-        <option value="n8r8">YD-ESP32-S3 N8R8 (8 MB, 8 MB PSRAM)</option>
-        <option value="n8r2">YD-ESP32-S3 N8R2 (8 MB, 2 MB PSRAM)</option>
-      </optgroup>
-      <optgroup label="Seeed Studio (UART)">
-        <option value="xiao-s3">Seeed Studio XIAO ESP32S3</option>
-      </optgroup>
-    </select>
-  </label>
   <esp-web-install-button id="install" manifest="manifest-n16r8.json"></esp-web-install-button>
 </p>
 <p class="note yd-only" data-i18n="module_note"></p>
@@ -117,7 +105,6 @@ const STRINGS = {
   en: {
     language: 'Language',
     board_choose: 'Choose your board:',
-    board: 'Board',
     intro_xiao: 'Flash a Seeed Studio XIAO ESP32S3 so that it bridges the 3.3 V UART console of a target board over Tailscale. Nothing to install: this page and a USB cable are enough.',
     hw_1_xiao: 'Buy a <a href="https://www.seeedstudio.com/XIAO-ESP32S3-p-5627.html"><strong>Seeed Studio XIAO ESP32S3</strong></a>. The plain board is the one that has been tested; the Sense and Plus versions have not. It has one USB-C port. Attach the antenna that comes in the package to the connector on the board.',
     hw_cert_xiao: '<strong>Radio certification.</strong> In Japan this board is sold with 技適: construction design certification number 217-230892, as <a href="https://akizukidenshi.com/catalog/g/g118078/">Akizuki Denshi lists it</a>. Elsewhere, please check the marking on the board and the rules that apply to you.',
@@ -140,8 +127,7 @@ const STRINGS = {
     unsupported: 'This browser has no WebSerial support. Open this page in Chrome or Edge on Windows, macOS, Linux or ChromeOS.',
     flash_title: '2. Flash',
     flash_1: 'Connect the <strong><code>COM</code></strong> port of the ESP32-S3 board (labelled COM or UART) to the PC. It flashes the board through the auto-download circuit and shows the boot log. The native USB port (labelled USB or OTG) works too, but after the <code>USB-OTG</code> pad is bridged, never have both ports on PCs at the same time.',
-    flash_module: 'Read the marking on the metal can of the module, such as <code>ESP32-S3-N16R8</code>, and pick that variant under "Board" below. N is the flash size, R the PSRAM size.',
-    module: 'Module',
+    flash_module: 'Read the marking on the metal can of the module, such as <code>ESP32-S3-N16R8</code>, and make sure that variant is the one chosen at the top of this page. N is the flash size, R the PSRAM size.',
     module_note: 'Modules without PSRAM (N4, N8, N16 with no R) are not supported. Modules marked ESP32-S3-N16R8 and ESP32-S3-N8R2 are the supported variants; N8R8 is built with the matching settings.',
     flash_2: 'Press the button below and pick the <code>USB JTAG/serial debug unit</code> port in the dialog.',
     flash_3: 'Choose "Install". On a new board, tick "Erase device". It takes about a minute.',
@@ -160,7 +146,6 @@ const STRINGS = {
   ja: {
     language: '言語',
     board_choose: '使うボードを選ぶ:',
-    board: 'ボード',
     intro_xiao: 'Seeed Studio XIAO ESP32S3 に書き込んで、対象ボードの 3.3 V の UART コンソールを Tailscale 経由で使えるようにします。ソフトウェアの導入は不要で、このページと USB ケーブルだけで完了します。',
     hw_1_xiao: '<a href="https://www.seeedstudio.com/XIAO-ESP32S3-p-5627.html"><strong>Seeed Studio XIAO ESP32S3</strong></a> を買う。動作を確認したのは無印のボードで、Sense と Plus は確認していない。USB-C は 1 つである。箱に入っているアンテナをボードのコネクタに取り付ける。',
     hw_cert_xiao: '<strong>無線の認証。</strong>日本では技適付きで売られています。工事設計認証番号は 217-230892 です（<a href="https://akizukidenshi.com/catalog/g/g118078/">秋月電子通商の商品ページ</a>の記載）。ほかの国では、ボードの表示とお住まいの国の規則を確かめてください。',
@@ -183,8 +168,7 @@ const STRINGS = {
     unsupported: 'このブラウザは WebSerial に対応していません。Windows、macOS、Linux、ChromeOS の Chrome または Edge で開いてください。',
     flash_title: '2. 書き込む',
     flash_1: 'ESP32-S3 ボードの <strong><code>COM</code></strong> 側（ラベルは COM や UART）を PC につなぐ。自動ダウンロード回路で書き込め、起動ログも見える。native USB 側（ラベルは USB や OTG）でも書き込めるが、<code>USB-OTG</code> パッドを短絡した後は両方のポートを同時に PC へ挿さないこと。',
-    flash_module: 'モジュールの金属カバーの刻印（<code>ESP32-S3-N16R8</code> など）を読み、下の「ボード」でその型番を選ぶ。N が flash、R が PSRAM の容量である。',
-    module: 'モジュール',
+    flash_module: 'モジュールの金属カバーの刻印（<code>ESP32-S3-N16R8</code> など）を読み、ページの最初でその型番を選んであることを確かめる。N が flash、R が PSRAM の容量である。',
     module_note: 'PSRAM のないモジュール（R の付かない N4、N8、N16）は対応していない。対応しているのは刻印が ESP32-S3-N16R8 と ESP32-S3-N8R2 のモジュールで、N8R8 は対応する設定でビルドしている。',
     flash_2: '下のボタンを押し、ダイアログで <code>USB JTAG/serial debug unit</code> のポートを選ぶ。',
     flash_3: '「Install」を選ぶ。初回は「Erase device」にチェックを入れる。1 分ほどで終わる。',
@@ -203,7 +187,6 @@ const STRINGS = {
   zh: {
     language: '语言',
     board_choose: '选择你的开发板：',
-    board: '开发板',
     intro_xiao: '给 Seeed Studio XIAO ESP32S3 写入固件，通过 Tailscale 桥接目标板的 3.3 V UART 控制台。无需安装任何软件：只要这个页面和一根 USB 线。',
     hw_1_xiao: '购买 <a href="https://www.seeedstudio.com/XIAO-ESP32S3-p-5627.html"><strong>Seeed Studio XIAO ESP32S3</strong></a>。经过测试的是普通版；Sense 和 Plus 版尚未测试。它只有一个 USB-C 口。把包装里附带的天线装到板上的天线座上。',
     hw_cert_xiao: '<strong>无线认证。</strong>在日本，这块板带有技适认证出售：工事设计认证号为 217-230892（见<a href="https://akizukidenshi.com/catalog/g/g118078/">秋月电子通商的商品页</a>）。在其他地区，请查看板上的标识，并确认当地的规定。',
@@ -226,8 +209,7 @@ const STRINGS = {
     unsupported: '此浏览器不支持 WebSerial。请在 Windows、macOS、Linux 或 ChromeOS 上用 Chrome 或 Edge 打开本页面。',
     flash_title: '2. 写入固件',
     flash_1: '将 ESP32-S3 开发板的 <strong><code>COM</code></strong> 口（标有 COM 或 UART）连接到电脑。它通过自动下载电路写入固件，并显示启动日志。原生 USB 口（标有 USB 或 OTG）也可以写入，但短接 <code>USB-OTG</code> 焊盘之后，两个口绝不能同时接电脑。',
-    flash_module: '查看模组金属屏蔽罩上的丝印（如 <code>ESP32-S3-N16R8</code>），并在下方选择对应型号。N 表示 flash 容量，R 表示 PSRAM 容量。',
-    module: '模组',
+    flash_module: '查看模组金属屏蔽罩上的丝印（如 <code>ESP32-S3-N16R8</code>），并确认页面顶部选择的是对应型号。N 表示 flash 容量，R 表示 PSRAM 容量。',
     module_note: '不支持没有 PSRAM 的模组（不带 R 的 N4、N8、N16）。支持丝印为 ESP32-S3-N16R8 和 ESP32-S3-N8R2 的模组；N8R8 按对应设置构建。',
     flash_2: '点击下方按钮，在对话框中选择 <code>USB JTAG/serial debug unit</code> 端口。',
     flash_3: '选择 "Install"。新板子请勾选 "Erase device"。大约需要一分钟。',
@@ -246,7 +228,6 @@ const STRINGS = {
   es: {
     language: 'Idioma',
     board_choose: 'Elige tu placa:',
-    board: 'Placa',
     intro_xiao: 'Graba una Seeed Studio XIAO ESP32S3 para que haga de puente, a través de Tailscale, con la consola UART de 3,3 V de una placa de destino. No hay que instalar nada: bastan esta página y un cable USB.',
     hw_1_xiao: 'Compra una <a href="https://www.seeedstudio.com/XIAO-ESP32S3-p-5627.html"><strong>Seeed Studio XIAO ESP32S3</strong></a>. La que se ha probado es la placa normal; las versiones Sense y Plus no se han probado. Tiene un solo puerto USB-C. Conecta la antena que viene en la caja al conector de la placa.',
     hw_cert_xiao: '<strong>Certificación de radio.</strong> En Japón esta placa se vende con 技適: número de certificación de diseño 217-230892, según <a href="https://akizukidenshi.com/catalog/g/g118078/">la ficha de Akizuki Denshi</a>. En otros países, comprueba las marcas de la placa y las normas que te correspondan.',
@@ -269,8 +250,7 @@ const STRINGS = {
     unsupported: 'Este navegador no admite WebSerial. Abre esta página en Chrome o Edge en Windows, macOS, Linux o ChromeOS.',
     flash_title: '2. Grabar',
     flash_1: 'Conecta al PC el puerto <strong><code>COM</code></strong> de la placa ESP32-S3 (marcado como COM o UART). Graba la placa a través del circuito de descarga automática y muestra el registro de arranque. El puerto USB nativo (marcado como USB u OTG) también sirve, pero una vez puenteado el pad <code>USB-OTG</code>, nunca conectes los dos puertos a PCs a la vez.',
-    flash_module: 'Lee la marca de la carcasa metálica del módulo, por ejemplo <code>ESP32-S3-N16R8</code>, y elige esa variante abajo. N es el tamaño de la flash y R el de la PSRAM.',
-    module: 'Módulo',
+    flash_module: 'Lee la marca de la carcasa metálica del módulo, por ejemplo <code>ESP32-S3-N16R8</code>, y comprueba que esa variante es la elegida al principio de la página. N es el tamaño de la flash y R el de la PSRAM.',
     module_note: 'Los módulos sin PSRAM (N4, N8, N16 sin R) no están soportados. Los módulos marcados ESP32-S3-N16R8 y ESP32-S3-N8R2 son las variantes soportadas; la N8R8 se compila con los ajustes correspondientes.',
     flash_2: 'Pulsa el botón de abajo y elige el puerto <code>USB JTAG/serial debug unit</code> en el diálogo.',
     flash_3: 'Elige "Install". En una placa nueva, marca "Erase device". Tarda alrededor de un minuto.',
