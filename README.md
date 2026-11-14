@@ -253,7 +253,7 @@ The baud rate is set with `baud` (115200 by default) or by an RFC 2217 client; t
 
 Verified with the plain XIAO ESP32S3 on a Raspberry Pi 5; the Sense and Plus versions have not been tried.
 The firmware limits the Wi-Fi transmit power to 15 dBm on this board: at 19.5 dBm and above it did not get past association with two access points, and at 18 dBm and below it did.
-We have not confirmed the board's radio certifications from its maker's documents; check the marking on the board and the rules that apply to you.
+In Japan the board is sold with 技適: construction design certification number 217-230892, as [Akizuki Denshi lists it](https://akizukidenshi.com/catalog/g/g118078/). Elsewhere, check the marking on the board and the rules that apply to you.
 [`hardware/xiao-carrier/`](hardware/xiao-carrier/) is a small carrier board for it (not made yet).
 
 ### A board that resets every few seconds
