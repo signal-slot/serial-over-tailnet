@@ -82,14 +82,14 @@ tsnode is split into these modules.
 
 ## Usage
 
-### Prepare the board (soldering required)
+### Prepare the board
 
 Two boards can be used; which one depends on where the target's console is.
 
-| Board | Bridges | What to solder |
+| Board | Bridges | Soldering |
 | --- | --- | --- |
-| YD-ESP32-S3 | a USB serial interface of the target (its debug USB port) | the `USB-OTG` pad on the back |
-| Seeed Studio XIAO ESP32S3 | a 3.3 V UART of the target (pins or a debug connector) | a 4-pin socket or pin header |
+| YD-ESP32-S3 | a USB serial interface of the target (its debug USB port) | required (the `USB-OTG` pad on the back) |
+| Seeed Studio XIAO ESP32S3 | a 3.3 V UART of the target (pins or a debug connector) | none on a board that comes with pin headers |
 
 The rest of this section prepares the YD-ESP32-S3.
 For the XIAO ESP32S3, its preparation and wiring are in "[Seeed Studio XIAO ESP32S3](#seeed-studio-xiao-esp32s3)" below.
@@ -241,7 +241,8 @@ Use it when the target has a UART on pins or a debug connector, such as the 3-pi
 | `D10` | TX (out of the XIAO) | the target's RX |
 | `D9` | RX (into the XIAO) | the target's TX |
 
-The four pins are next to each other on one side of the board (from the USB-C end: 5V, GND, 3V3, D10, D9, D8, D7), so one 4-pin socket or pin header carries the link.
+The four pins are next to each other on one side of the board (from the USB-C end: 5V, GND, 3V3, D10, D9, D8, D7).
+On a board that comes with pin headers, jumper wires plug straight onto them; on a bare board, solder a 4-pin socket or pin header there.
 The UART is 3.3 V only: do not connect 5 V or RS-232 signals, and put a level translator in between for a 1.8 V target.
 Attach the antenna that comes with the board.
 
