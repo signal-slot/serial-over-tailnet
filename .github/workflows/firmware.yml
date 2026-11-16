@@ -19,16 +19,22 @@ jobs:
       matrix:
         # Module variants n<flash MB>r<PSRAM MB>: the ones the YD-ESP32-S3
         # board is made with. PSRAM is required; flash size and PSRAM mode
-        # are build-time settings. `xiao-s3` is the Seeed Studio XIAO ESP32S3
-        # (no USB host: a 3.3 V UART is bridged). `adapter` is the board in
-        # hardware/board; it is built here but not offered by the installer
-        # until a board has been made and tested.
-        variant: [n16r8, n8r8, n8r2, adapter, xiao-s3]
+        # are build-time settings. `xiao-s3` and `xiao-c3` are the Seeed
+        # Studio XIAO ESP32S3 and ESP32C3 (no USB host: a 3.3 V UART is
+        # bridged); the ESP32-C3 is a RISC-V chip without PSRAM, built for
+        # another target and without the USB host component. `adapter` is the
+        # board in hardware/board; it is built here but not offered by the
+        # installer until a board has been made and tested.
+        variant: [n16r8, n8r8, n8r2, adapter, xiao-s3, xiao-c3]
         include:
           - variant: adapter
             features: --features board-adapter
           - variant: xiao-s3
             features: --features board-xiao-s3
+          - variant: xiao-c3
+            features: --features board-xiao-c3 --target riscv32imc-esp-espidf
+            mcu: esp32c3
+            no_extra_components: true
     env:
       ESP_IDF_SDKCONFIG_DEFAULTS: "sdkconfig.defaults;variants/${{ matrix.variant }}.defaults"
     steps:
@@ -74,7 +80,13 @@ jobs:
 
       - name: Build
         working-directory: firmware
-        run: cargo build --release ${{ matrix.features }}
+        env:
+          MCU: ${{ matrix.mcu || 'esp32s3' }}
+        run: |
+          if [ "${{ matrix.no_extra_components }}" = "true" ]; then
+            export ESP_IDF_SYS_EXTRA_COMPONENTS_FILE="$PWD/variants/no-extra-components.toml"
+          fi
+          cargo build --release ${{ matrix.features }}
 
       - name: Flash image
         working-directory: firmware
@@ -105,7 +117,9 @@ jobs:
             v=${d#dist/firmware-}
             mkdir -p "site/firmware/$v"
             cp "$d/bootloader.bin" "$d/partition-table.bin" "$d/app.bin" "site/firmware/$v/"
-            sed "s/__VARIANT__/$v/g" web/manifest.json > "site/manifest-$v.json"
+            # The chip, from the variant's ESP-IDF target (ESP32-S3 unless it says otherwise).
+            chip=$(sed -n 's/^CONFIG_IDF_TARGET="esp32\(.*\)"/\1/p' "firmware/variants/$v.defaults" | tr a-z A-Z)
+            sed "s/__VARIANT__/$v/g; s/__CHIP__/ESP32-${chip:-S3}/g" web/manifest.json > "site/manifest-$v.json"
           done
           sed -i "s/__VERSION__/${version}+${GITHUB_SHA::7}/" site/manifest-*.json site/index.html
           ls -R site | head -40

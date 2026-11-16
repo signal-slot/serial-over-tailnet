@@ -3,13 +3,13 @@
 [日本語](README-ja.md)
 
 An ESP32-S3 board with PSRAM that joins a Tailscale network (a tailnet) on its own and bridges the serial console of a target SBC to a TCP port on the tailnet.
-The console is a 3.3 V UART of the target (with a Seeed Studio XIAO ESP32S3) or one of its USB serial interfaces (with a YD-ESP32-S3).
+The console is a 3.3 V UART of the target (with a Seeed Studio XIAO ESP32S3 or ESP32C3) or one of its USB serial interfaces (with a YD-ESP32-S3).
 The project was called usb-serial-over-tailscale until November 2026.
 
 ![A laptop reaches the target board's serial console through Tailscale; the XIAO ESP32S3 is powered from a USB charger and wired to the target's 3-pin debug connector with three wires](web/overview-xiao.webp)
 
 ```text
-Remote PC ──Tailscale / TCP:35930────▶ XIAO ESP32S3 ──UART──────▶ UART console of the target SBC
+Remote PC ──Tailscale / TCP:35930────▶ XIAO ESP32S3/C3 ──UART───▶ UART console of the target SBC
 Remote PC ──Tailscale / TCP:35930+n──▶ YD-ESP32-S3 ───USB host──▶ serial interface n of the target SBC
 ```
 
@@ -23,6 +23,7 @@ Working end to end:
 - Wi-Fi setup through the wizard and joining a tailnet with the approval URL.
 - `tailscale ping` from another node, both via DERP and over a direct path.
 - With a XIAO ESP32S3: the console of a Raspberry Pi 5 over its 3.3 V UART (the 3-pin debug connector).
+- With a XIAO ESP32C3 (no PSRAM): joining a tailnet of 50 peers, its DERP connection, 300 bridge connections in a row with memory steady, and its UART in a loopback (D4 wired to D5) over the tailnet.
 - With a YD-ESP32-S3: console access to a Raspberry Pi Debug Probe (CDC-ACM) and a Toradex Dahlia (FT4232H) over USB.
 - RFC 2217 sessions against both USB targets: baud rate and framing changes, DTR and RTS, break and purge from pyserial.
 - On the FT4232H, three ports claimed at once and a client on the fourth port refused.
@@ -32,6 +33,7 @@ Not yet:
 
 - Headless registration with an auth key.
 - RFC 2217 sessions on the XIAO's UART (implemented, not tried against a client).
+- The XIAO ESP32C3's UART against a target (only a loopback so far).
 - CP210x, CH340/CH341, and non-H-series FTDI chips such as the FT232R.
 - Recovery after a reboot of the target SBC, an internet outage, or an unreachable control server.
 - Long-running operation, behaviour after node key expiry (180 days by default), and reboots triggered by the task watchdog.
@@ -40,23 +42,30 @@ Not yet:
 ### Boards and images
 
 Flash size and PSRAM mode are build-time settings, so CI builds one image per board and module (`firmware/variants/`).
-PSRAM is required: network thread stacks, TLS buffers and most of the heap live there.
+PSRAM is required on the ESP32-S3 boards: network thread stacks, TLS buffers and most of the heap live there.
+The ESP32-C3 has none; its image is built with smaller stacks and buffers (feature `small-ram` of tsnode), and about 40 KB of its RAM stays free on a tailnet of 50 peers.
 
 | Image | Board | Flash | PSRAM | Status |
 | --- | --- | --- | --- | --- |
 | `xiao-s3` | Seeed Studio XIAO ESP32S3 | 8 MB | 8 MB octal | supported |
+| `xiao-c3` | Seeed Studio XIAO ESP32C3 | 4 MB | none | supported (UART tried in a loopback) |
 | `n16r8` | YD-ESP32-S3 with an N16R8 module | 16 MB | 8 MB octal | supported |
 | `n8r2` | YD-ESP32-S3 with an N8R2 module | 8 MB | 2 MB quad | supported |
 | `n8r8` | YD-ESP32-S3 with an N8R8 module | 8 MB | 8 MB octal | built |
 | | modules without PSRAM (N4, N8, N16) | | none | not supported |
 
 To build an image locally, point esp-idf-sys at its defaults file and pass its name to the image script.
-The XIAO's image also needs its feature:
+The XIAO's image also needs its feature; the ESP32-C3 is another target and is built without the USB host component:
 
 ```bash
 cd firmware
 ESP_IDF_SDKCONFIG_DEFAULTS="sdkconfig.defaults;variants/xiao-s3.defaults" cargo build --release --features board-xiao-s3
 tools/mkimage.sh xiao-s3 release
+
+MCU=esp32c3 ESP_IDF_SYS_EXTRA_COMPONENTS_FILE="$PWD/variants/no-extra-components.toml" \
+ESP_IDF_SDKCONFIG_DEFAULTS="sdkconfig.defaults;variants/xiao-c3.defaults" \
+  cargo build --release --features board-xiao-c3 --target riscv32imc-esp-espidf
+tools/mkimage.sh xiao-c3 release
 
 ESP_IDF_SDKCONFIG_DEFAULTS="sdkconfig.defaults;variants/n8r2.defaults" cargo build --release
 tools/mkimage.sh n8r2 release
@@ -69,7 +78,7 @@ tools/mkimage.sh n8r2 release
 | `crates/tsnode` | Tailscale node: control plane (ts2021 Noise and a minimal HTTP/2), WireGuard, DERP, disco, STUN, TCP termination with smoltcp. Runs on a host and on ESP-IDF. |
 | `crates/adapter-core` | Interactive setup shell. I/O and device operations are traits, so the wizard is unit-tested on the host. |
 | `tools/hostnode` | Runs tsnode on Linux for verification: joins a real tailnet and serves an echo server. |
-| `firmware` | ESP32-S3 firmware (esp-idf-svc): setup console, UART bridge (XIAO ESP32S3), USB host (YD-ESP32-S3: CDC-ACM, FTDI, CP210x, CH34x), Wi-Fi, Tailscale node, TCP bridge. |
+| `firmware` | ESP32-S3 and ESP32-C3 firmware (esp-idf-svc): setup console, UART bridge (XIAO ESP32S3 and ESP32C3), USB host (YD-ESP32-S3: CDC-ACM, FTDI, CP210x, CH34x), Wi-Fi, Tailscale node, TCP bridge. |
 | `hardware/case` | 3D-printed case for the YD-ESP32-S3: OpenSCAD source and ready-to-print STLs, with and without pin headers ([README](hardware/case/README.md)). |
 | `hardware/xiao-carrier` | Carrier board for the XIAO ESP32S3 with level translation and a 4-pin header; designed, not made ([README](hardware/xiao-carrier/README.md)). |
 | `hardware/board` | Our own adapter board around the ESP32-S3-MINI-1; ordered, not yet verified ([README](hardware/board/README.md)). |
@@ -95,6 +104,7 @@ Two boards can be used; which one depends on where the target's console is.
 | Board | Bridges | Soldering |
 | --- | --- | --- |
 | Seeed Studio XIAO ESP32S3 | a 3.3 V UART of the target (pins or a debug connector) | none on a board that comes with pin headers |
+| Seeed Studio XIAO ESP32C3 | the same, on other pins | the same |
 | YD-ESP32-S3 | a USB serial interface of the target (its debug USB port) | required (the `USB-OTG` pad on the back) |
 
 #### Seeed Studio XIAO ESP32S3
@@ -124,6 +134,25 @@ Verified with the plain XIAO ESP32S3 on a Raspberry Pi 5; the Sense and Plus ver
 The firmware limits the Wi-Fi transmit power to 15 dBm on this board: at 19.5 dBm and above it did not get past association with two access points, and at 18 dBm and below it did.
 In Japan the board is sold with 技適: construction design certification number 217-230892, as [Akizuki Denshi lists it](https://akizukidenshi.com/catalog/g/g118078/). Elsewhere, check the marking on the board and the rules that apply to you.
 [`hardware/xiao-carrier/`](hardware/xiao-carrier/) is a small carrier board for it (not made yet).
+
+#### Seeed Studio XIAO ESP32C3
+
+The [XIAO ESP32C3](https://wiki.seeedstudio.com/XIAO_ESP32C3_Getting_Started/) has the same outline and is used the same way, with these differences:
+
+| XIAO pin | Role | Connect to |
+| --- | --- | --- |
+| `GND` | ground | the target's GND |
+| `D4` | TX (out of the XIAO) | the target's RX |
+| `D5` | RX (into the XIAO) | the target's TX |
+
+`D4` and `D5` are the 5th and 6th pins from the USB-C end on the side with D0 to D6; `GND` is the 2nd pin on the other side.
+They are not the S3's D10 and D9: on the ESP32-C3, D9 is GPIO9, the pin that selects the boot mode, and a target's TX (or an unpowered target) could hold it low at reset.
+The carrier board does not fit it for the same reason.
+
+Its ESP32-C3 has no PSRAM, so the firmware keeps less: only a few endpoints per peer, a peer's WireGuard state only once the peer talks to it, and a TCP window of 2 KB on the tailnet.
+It has joined a tailnet of 49 peers with about 50 KB of RAM to spare; a much larger tailnet may not fit.
+The UART has not been tried against a target yet.
+In Japan the board is sold with 技適: construction design certification number 204-B00704, as [Akizuki Denshi lists it](https://akizukidenshi.com/catalog/g/g117454/).
 
 #### YD-ESP32-S3
 
@@ -320,6 +349,8 @@ Flash with esptool as above: `espflash` does not accept this firmware's image.
 - Direct paths are established with disco ping/pong and call-me-maybe. The source of an authenticated UDP packet from a peer is also adopted as a path.
 - WireGuard timestamps are corrected with the offset between the system clock and control time, and with SNTP.
 - Network thread stacks live in PSRAM; only the control thread, which writes flash, keeps an internal-RAM stack.
+- The network map is parsed while it arrives and never held as text: keys and addresses become binary as they are read, fields that are not used are skipped, each peer is a separate allocation, and a peer's WireGuard state is made the first time the peer talks to us. The first map of a tailnet of 49 peers is 69 KB of JSON; held whole and as text it did not fit an ESP32-C3.
+- A bridge keeps one serial-to-TCP thread for all its sessions. Every Rust thread that ends on ESP-IDF leaves about 160 bytes behind (plain pthreads do not), so a thread per session ran an ESP32-C3 out of memory after some 150 connections. The session is handed to that thread in a slot it checks every 20 ms, and its end is a flag the session checks: handing it over through a channel, each thread parked until the other woke it, corrupted a thread's stack on the ESP32-S3 about once in 300 sessions.
 - The heap prefers PSRAM, and Rust code is built without the hardware compare-and-swap instruction (`target-feature=-s32c1i`): on the ESP32-S3 that instruction is not atomic between the two cores for a word in PSRAM, which broke `Mutex` and `Arc`. Atomics go through ESP-IDF's `__atomic_*` functions instead.
 - The USB host relies on the CDC-ACM host driver's fallback of opening any interface with two bulk endpoints; FTDI, CP210x and CH34x get only their chip-specific setup through vendor control transfers.
 - The interface stays claimed between sessions because of the USB data toggle. A pipe the host creates starts at DATA0, while the device keeps the toggle of each endpoint from the session before. Claiming the interface per session made the device acknowledge and drop the first packet of every other session, with no error on the host: the first keystroke vanished. Asking the device to reset its toggles with CLEAR_FEATURE(ENDPOINT_HALT) was tried and does not work on the Debug Probe (TinyUSB), so the pipes are kept instead.

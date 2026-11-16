@@ -3,13 +3,13 @@
 [English](README.md)
 
 PSRAM 付きの ESP32-S3 単体で Tailscale のネットワーク（Tailnet）に参加し、対象 SBC のシリアルコンソールを Tailnet 上の TCP ポートに中継するアダプタである。
-中継するのは、対象の 3.3 V の UART（Seeed Studio XIAO ESP32S3 を使う場合）か、対象の USB シリアルインターフェース（YD-ESP32-S3 を使う場合）である。
+中継するのは、対象の 3.3 V の UART（Seeed Studio XIAO ESP32S3 か ESP32C3 を使う場合）か、対象の USB シリアルインターフェース（YD-ESP32-S3 を使う場合）である。
 2026 年 11 月までは usb-serial-over-tailscale という名前だった。
 
 ![ノート PC から Tailscale 経由で対象ボードのシリアルコンソールに届く。XIAO ESP32S3 は USB 充電器から給電し、対象の 3 ピンのデバッグ用コネクタに 3 本の線でつなぐ](web/overview-xiao.webp)
 
 ```text
-Remote PC ──Tailscale / TCP:35930────▶ XIAO ESP32S3 ──UART──────▶ 対象 SBC の UART コンソール
+Remote PC ──Tailscale / TCP:35930────▶ XIAO ESP32S3/C3 ──UART───▶ 対象 SBC の UART コンソール
 Remote PC ──Tailscale / TCP:35930+n──▶ YD-ESP32-S3 ───USB host──▶ 対象 SBC のシリアルインターフェース n
 ```
 
@@ -23,6 +23,7 @@ Tailscale のノードとして必要な機能（制御プロトコル、WireGua
 - ウィザードによる Wi-Fi 設定と、承認 URL 方式での Tailnet 参加。
 - 別ノードからの `tailscale ping`（DERP 経由と直接経路）。
 - XIAO ESP32S3 での、Raspberry Pi 5 の 3.3 V の UART（3 ピンのデバッグ用コネクタ）のコンソール操作。
+- XIAO ESP32C3（PSRAM なし）での、ピア 50 台の Tailnet への参加、DERP 接続、ブリッジへの 300 回続けての接続（メモリは横ばい）、Tailnet 経由での UART の折り返し（D4 と D5 を直結）。
 - YD-ESP32-S3 での、USB 経由の Raspberry Pi Debug Probe（CDC-ACM）と Toradex Dahlia（FT4232H）のコンソール操作。
 - USB の対象 2 つに対する RFC 2217 セッション。pyserial からのボーレートとフレーミングの変更、DTR と RTS、ブレーク、purge。
 - FT4232H で 3 ポートを同時に claim し、4 つ目のポートのクライアントが拒否されること。
@@ -32,6 +33,7 @@ Tailscale のノードとして必要な機能（制御プロトコル、WireGua
 
 - auth key による headless 登録。
 - XIAO の UART での RFC 2217 セッション（実装済み、クライアントでは未確認）。
+- XIAO ESP32C3 の UART を対象につないだ動作（確かめたのは折り返しだけ）。
 - CP210x、CH340/CH341、FT232R など H シリーズ以外の FTDI。
 - 対象 SBC 自体の再起動、インターネット断、control サーバ到達不能からの復帰。
 - 長時間運用、鍵期限切れ（既定 180 日）後の挙動、Task WDT による再起動。
@@ -40,12 +42,15 @@ Tailscale のノードとして必要な機能（制御プロトコル、WireGua
 ### ボードとイメージ
 
 flash の容量と PSRAM の方式はビルド時の固定設定なので、CI はボードとモジュールごとにイメージを作る（`firmware/variants/`）。
-PSRAM は必須である。
+ESP32-S3 のボードでは PSRAM は必須である。
 ネットワーク系スレッドのスタック、TLS のバッファ、ヒープの大半を PSRAM に置いている。
+ESP32-C3 には PSRAM がない。
+そのイメージはスタックとバッファを小さくしてビルドし（tsnode の feature `small-ram`）、ピア 50 台の Tailnet で RAM が 40 KB ほど空いている。
 
 | イメージ | ボード | flash | PSRAM | 状況 |
 | --- | --- | --- | --- | --- |
 | `xiao-s3` | Seeed Studio XIAO ESP32S3 | 8 MB | 8 MB Octal | 対応 |
+| `xiao-c3` | Seeed Studio XIAO ESP32C3 | 4 MB | なし | 対応（UART は折り返しで確認） |
 | `n16r8` | YD-ESP32-S3（モジュール N16R8） | 16 MB | 8 MB Octal | 対応 |
 | `n8r2` | YD-ESP32-S3（モジュール N8R2） | 8 MB | 2 MB Quad | 対応 |
 | `n8r8` | YD-ESP32-S3（モジュール N8R8） | 8 MB | 8 MB Octal | ビルドのみ |
@@ -53,11 +58,17 @@ PSRAM は必須である。
 
 手元でイメージをビルドするには、esp-idf-sys にそのイメージの defaults ファイルを渡し、イメージ作成スクリプトにも名前を渡す。
 XIAO のイメージには feature の指定も要る。
+ESP32-C3 は別のターゲットで、USB ホストのコンポーネントを外してビルドする。
 
 ```bash
 cd firmware
 ESP_IDF_SDKCONFIG_DEFAULTS="sdkconfig.defaults;variants/xiao-s3.defaults" cargo build --release --features board-xiao-s3
 tools/mkimage.sh xiao-s3 release
+
+MCU=esp32c3 ESP_IDF_SYS_EXTRA_COMPONENTS_FILE="$PWD/variants/no-extra-components.toml" \
+ESP_IDF_SDKCONFIG_DEFAULTS="sdkconfig.defaults;variants/xiao-c3.defaults" \
+  cargo build --release --features board-xiao-c3 --target riscv32imc-esp-espidf
+tools/mkimage.sh xiao-c3 release
 
 ESP_IDF_SDKCONFIG_DEFAULTS="sdkconfig.defaults;variants/n8r2.defaults" cargo build --release
 tools/mkimage.sh n8r2 release
@@ -70,7 +81,7 @@ tools/mkimage.sh n8r2 release
 | `crates/tsnode` | Tailscale ノード実装。制御プレーン（ts2021 Noise と最小の HTTP/2）、WireGuard、DERP、disco、STUN、smoltcp による TCP 終端。ホストでも ESP-IDF でも動く。 |
 | `crates/adapter-core` | 対話式セットアップシェル。入出力とデバイス操作を trait で抽象化し、ウィザードをホストで単体テストする。 |
 | `tools/hostnode` | tsnode を Linux で動かす検証ツール。実 Tailnet に参加して echo サーバを公開する。 |
-| `firmware` | ESP32-S3 ファームウェア（esp-idf-svc）。設定コンソール、UART の中継（XIAO ESP32S3）、USB ホスト（YD-ESP32-S3。CDC-ACM、FTDI、CP210x、CH34x）、Wi-Fi、Tailscale ノード、TCP ブリッジ。 |
+| `firmware` | ESP32-S3 と ESP32-C3 のファームウェア（esp-idf-svc）。設定コンソール、UART の中継（XIAO ESP32S3 と ESP32C3）、USB ホスト（YD-ESP32-S3。CDC-ACM、FTDI、CP210x、CH34x）、Wi-Fi、Tailscale ノード、TCP ブリッジ。 |
 | `hardware/case` | YD-ESP32-S3 用の 3D プリントケース。OpenSCAD のソースと、そのまま印刷できる STL（ピンヘッダの有無の 2 種類）がある（[README](hardware/case/README-ja.md)）。 |
 | `hardware/xiao-carrier` | XIAO ESP32S3 用のキャリア基板。レベル変換と 4 ピンのヘッダを持つ。設計済みで未製作（[README](hardware/xiao-carrier/README-ja.md)）。 |
 | `hardware/board` | ESP32-S3-MINI-1 を使う独自のアダプタ基板。発注済みで未検証（[README](hardware/board/README-ja.md)）。 |
@@ -96,6 +107,7 @@ tsnode の内部は次のモジュールに分かれる。
 | ボード | 中継するもの | はんだ付け |
 | --- | --- | --- |
 | Seeed Studio XIAO ESP32S3 | 対象の 3.3 V の UART（ピンやデバッグ用コネクタ） | ピンヘッダ付きのボードなら要らない |
+| Seeed Studio XIAO ESP32C3 | 同上（ピンが違う） | 同上 |
 | YD-ESP32-S3 | 対象の USB シリアル（デバッグ用 USB ポート） | 要る（裏面の `USB-OTG` パッド） |
 
 #### Seeed Studio XIAO ESP32S3
@@ -136,6 +148,32 @@ Sense と Plus は試していない。
 工事設計認証番号は 217-230892 である（[秋月電子通商の商品ページ](https://akizukidenshi.com/catalog/g/g118078/)の記載）。
 ほかの国では、ボードの表示とその国の規則を確かめてほしい。
 [`hardware/xiao-carrier/`](hardware/xiao-carrier/) は、このボード用の小さなキャリア基板である（未製作）。
+
+#### Seeed Studio XIAO ESP32C3
+
+[XIAO ESP32C3](https://wiki.seeedstudio.com/XIAO_ESP32C3_Getting_Started/) は外形が同じで、使い方も同じである。
+違いは次のとおりである。
+
+| XIAO のピン | 役割 | つなぐ先 |
+| --- | --- | --- |
+| `GND` | グラウンド | 対象の GND |
+| `D4` | TX（XIAO の出力） | 対象の RX |
+| `D5` | RX（XIAO の入力） | 対象の TX |
+
+`D4` と `D5` は、D0 から D6 が並ぶ側の、USB-C の端から 5 番目と 6 番目のピンである。
+`GND` は反対側の 2 番目のピンである。
+S3 の D10 と D9 ではない。
+ESP32-C3 では D9 が GPIO9 で、起動モードを決めるピンである。
+対象の TX（や電源の入っていない対象）がリセット時にそこを Low にすると、起動に影響する。
+同じ理由で、キャリア基板には載せられない。
+
+ESP32-C3 には PSRAM がないので、ファームウェアは持つ情報を減らしている。
+ピアごとの接続先候補は数個だけにし、ピアの WireGuard の状態はそのピアと通信が始まってから作り、Tailnet 上の TCP の窓は 2 KB にしている。
+ピア 49 台の Tailnet に、RAM を 50 KB ほど残して参加できた。
+はるかに大きな Tailnet では入らないかもしれない。
+UART を対象につないだ動作はまだ確かめていない。
+日本では技適付きで売られている。
+工事設計認証番号は 204-B00704 である（[秋月電子通商の商品ページ](https://akizukidenshi.com/catalog/g/g117454/)の記載）。
 
 #### YD-ESP32-S3
 
@@ -357,6 +395,8 @@ $PY -m esptool --chip esp32s3 --port /dev/ttyACM0 --baud 921600 write_flash \
 - 直接経路は disco の ping と pong、call-me-maybe で確立する。相手から届いた認証済み UDP パケットの送信元も経路として採用する。
 - WireGuard のタイムスタンプは、システム時計と control 時刻との差分、および SNTP で補正する。
 - ネットワーク系スレッドのスタックは PSRAM に置き、フラッシュを書く制御スレッドだけ内部 RAM に置く。
+- ネットワークマップは受け取りながら解析し、テキストのまま持たない。鍵とアドレスは読んだ時点でバイナリに直し、使わない項目は読み飛ばし、ピアは 1 台ずつ別の領域に置き、ピアの WireGuard の状態はそのピアから通信が来て初めて作る。ピア 49 台の Tailnet の最初のマップは JSON で 69 KB あり、丸ごとテキストで持つと ESP32-C3 に入らなかった。
+- ブリッジは、シリアルから TCP へ送るスレッドを 1 本だけ持ち、全セッションで使い回す。ESP-IDF 上の Rust のスレッドは終了するたびに 160 バイトほど残す（素の pthread は残さない）ので、セッションごとにスレッドを作ると、ESP32-C3 では 150 回ほどの接続でメモリが尽きた。セッションは、そのスレッドが 20 ms ごとに見に行く箱に置いて渡し、終わりはセッションの側が旗を見て知る。チャネルで渡し、互いに相手を起こすまで眠る形にしていたときは、ESP32-S3 で 300 セッションに 1 回ほどスレッドのスタックが壊れた。
 - ヒープは PSRAM を先に使い、Rust のコードはハードウェアの比較交換命令を使わずにビルドする（`target-feature=-s32c1i`）。ESP32-S3 では、PSRAM 上のワードに対するこの命令が 2 つのコアの間でアトミックにならず、`Mutex` と `Arc` が壊れた。アトミック操作は ESP-IDF の `__atomic_*` 関数を通す。
 - USB ホストは CDC-ACM ホストドライバの「bulk エンドポイントが 2 本あれば開く」フォールバックに乗せ、FTDI、CP210x、CH34x はチップ固有の設定だけをベンダー制御転送で送る。
 - セッションをまたいでインターフェースを claim したままにするのは USB のデータトグルのためである。ホストが作るパイプは DATA0 から始まるが、デバイスは各エンドポイントのトグルを前のセッションから引き継ぐ。セッションごとに claim し直していたときは、奇数パケットのセッションの次のセッションで最初のパケットが ACK されたまま捨てられ、ホストにはエラーも出ずに最初の打鍵が消えていた。CLEAR_FEATURE(ENDPOINT_HALT) でデバイス側のトグルを戻す方法も試したが Debug Probe（TinyUSB）では効かないので、パイプを保持する方にした。
