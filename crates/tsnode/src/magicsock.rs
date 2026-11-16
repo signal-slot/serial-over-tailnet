@@ -27,15 +27,27 @@ const TRUST_UDP_ADDR: Duration = Duration::from_millis(6500);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(3);
 const SESSION_ACTIVE_TIMEOUT: Duration = Duration::from_secs(45);
 const DISCO_PING_INTERVAL: Duration = Duration::from_secs(5);
+/// A pong later than this after its ping is not counted.
+const PING_ANSWER_WINDOW: Duration = Duration::from_secs(10);
+/// Pings awaiting a pong per peer.
+const MAX_PINGS: usize = if cfg!(feature = "small-ram") { 8 } else { 32 };
 const CALL_ME_MAYBE_INTERVAL: Duration = Duration::from_secs(10);
 const STUN_INTERVAL: Duration = Duration::from_secs(30);
 const DERP_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 const DERP_PING_IDLE: Duration = Duration::from_secs(55);
 const DERP_PING_TIMEOUT: Duration = Duration::from_secs(15);
 /// Packets queued for one DERP connection while it is (re)connecting.
-const DERP_QUEUE_LIMIT: usize = 64;
+const DERP_QUEUE_LIMIT: usize = if cfg!(feature = "small-ram") { 16 } else { 64 };
 /// Endpoints remembered per peer (from control plus call-me-maybe).
-const MAX_ENDPOINTS: usize = 16;
+const MAX_ENDPOINTS: usize = if cfg!(feature = "small-ram") { 8 } else { 16 };
+/// Receive buffer of the UDP socket: a datagram longer than this is cut.
+const UDP_BUF: usize = if cfg!(feature = "small-ram") {
+    2048
+} else {
+    65536
+};
+/// Endpoints kept per peer from the map with `small-ram`.
+const SMALL_RAM_ENDPOINTS: usize = 4;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Path {
@@ -50,24 +62,42 @@ struct BestAddr {
 }
 
 struct Peer {
+    /// The node ID control gives it (removals and patches refer to it).
+    id: i64,
     key: [u8; 32],
     name: String,
     disco: Option<[u8; 32]>,
     allowed_ips: Vec<(IpAddr, u8)>,
     endpoints: Vec<SocketAddr>,
     home_derp: i32,
-    tunn: Tunn,
+    /// Made the first time the peer is talked to: most peers of a tailnet
+    /// never are, and a tunnel costs a few hundred bytes.
+    tunn: Option<Box<Tunn>>,
     best: Option<BestAddr>,
-    pings: HashMap<TxId, (SocketAddr, Instant)>,
+    /// Disco pings awaiting a pong: (txid, address, sent). Only recent
+    /// ones are kept (unanswered pings to stale endpoints used to pile up in
+    /// a table to its cap, kilobytes per active peer).
+    pings: Vec<(TxId, SocketAddr, Instant)>,
     last_ping_round: Option<Instant>,
     last_heartbeat: Option<Instant>,
     last_cmm: Option<Instant>,
     last_activity: Option<Instant>,
 }
 
+impl Peer {
+    /// The peer's WireGuard tunnel, made the first time it is needed.
+    fn tunnel(&mut self, local: &RwLock<KeyPair>) -> &mut Tunn {
+        let key = self.key;
+        self.tunn
+            .get_or_insert_with(|| Box::new(Tunn::new(local.read().unwrap().clone(), key)))
+    }
+}
+
 struct State {
-    peers: HashMap<[u8; 32], Peer>,
-    by_disco: HashMap<[u8; 32], [u8; 32]>,
+    /// Boxed, so that the table is a small block of keys and pointers
+    /// rather than one block of every peer's state (tens of kilobytes on a
+    /// tailnet of 50, more than a device without PSRAM has in one piece).
+    peers: HashMap<[u8; 32], Box<Peer>>,
     by_index: HashMap<u32, [u8; 32]>,
     filter: Option<crate::filter::Filter>,
     derp_map: DerpMap,
@@ -152,7 +182,6 @@ impl MagicSock {
             udp_port: bound_port,
             state: Mutex::new(State {
                 peers: HashMap::new(),
-                by_disco: HashMap::new(),
                 by_index: HashMap::new(),
                 filter: None,
                 derp_map: DerpMap::default(),
@@ -251,14 +280,16 @@ impl MagicSock {
                     .filter(|b| b.trust_until > now)
                     .map(|b| b.addr),
                 home_derp: p.home_derp,
-                has_session: p.tunn.has_session(),
+                has_session: p.tunn.as_ref().is_some_and(|t| t.has_session()),
                 active: p
                     .last_activity
                     .map(|t| now.duration_since(t) < SESSION_ACTIVE_TIMEOUT)
                     .unwrap_or(false),
             })
             .collect();
-        v.sort_by(|a, b| a.name.cmp(&b.name));
+        // Unstable: a stable sort of more than 20 items reserves 4 KB of
+        // stack, which overflowed a 5 KB shell thread on the ESP32-C3.
+        v.sort_unstable_by(|a, b| a.name.cmp(&b.name));
         v
     }
 
@@ -271,25 +302,20 @@ impl MagicSock {
     }
 
     /// Replaces the full peer list.
-    pub fn set_peers(&self, nodes: &[Node]) {
+    pub fn set_peers(&self, nodes: Vec<Box<Node>>) {
         let mut st = self.inner.state.lock().unwrap();
         let mut old = std::mem::take(&mut st.peers);
-        st.by_disco.clear();
+        // Sized once: a table that doubles as it fills needs its old and new
+        // blocks at the same time.
+        st.peers.reserve(nodes.len());
         st.by_index.clear();
         for n in nodes {
-            let Some(key) = crate::keys::parse_prefixed(crate::keys::NODE_PUB_PREFIX, &n.key)
-            else {
+            let Some(key) = n.key else {
                 continue;
             };
-            let mut peer = match old.remove(&key) {
-                Some(p) => p,
-                None => new_peer(self.inner.node_key.read().unwrap().clone(), key),
-            };
-            apply_node(&mut peer, n);
-            if let Some(d) = peer.disco {
-                st.by_disco.insert(d, key);
-            }
-            for idx in peer.tunn.local_indices() {
+            let mut peer = old.remove(&key).unwrap_or_else(|| new_peer(key));
+            apply_node(&mut peer, *n);
+            for idx in peer.tunn.iter().flat_map(|t| t.local_indices()) {
                 st.by_index.insert(idx, key);
             }
             st.peers.insert(key, peer);
@@ -297,38 +323,27 @@ impl MagicSock {
         debug!("magicsock: {} peers", st.peers.len());
     }
 
-    pub fn peers_changed(&self, nodes: &[Node]) {
+    pub fn peers_changed(&self, nodes: Vec<Box<Node>>) {
         let mut st = self.inner.state.lock().unwrap();
         for n in nodes {
-            let Some(key) = crate::keys::parse_prefixed(crate::keys::NODE_PUB_PREFIX, &n.key)
-            else {
+            let Some(key) = n.key else {
                 continue;
             };
-            let mut peer = st
-                .peers
-                .remove(&key)
-                .unwrap_or_else(|| new_peer(self.inner.node_key.read().unwrap().clone(), key));
-            if let Some(d) = peer.disco {
-                st.by_disco.remove(&d);
+            // A node whose key changed is the same ID under a new key.
+            if let Some(stale) = key_of(&st, n.id).filter(|k| *k != key) {
+                remove_peer(&mut st, stale);
             }
-            apply_node(&mut peer, n);
-            if let Some(d) = peer.disco {
-                st.by_disco.insert(d, key);
-            }
+            let mut peer = st.peers.remove(&key).unwrap_or_else(|| new_peer(key));
+            apply_node(&mut peer, *n);
             st.peers.insert(key, peer);
         }
     }
 
-    pub fn peers_removed(&self, ids: &[i64], nodes_by_id: &HashMap<i64, [u8; 32]>) {
+    pub fn peers_removed(&self, ids: &[i64]) {
         let mut st = self.inner.state.lock().unwrap();
         for id in ids {
-            if let Some(key) = nodes_by_id.get(id) {
-                if let Some(p) = st.peers.remove(key) {
-                    if let Some(d) = p.disco {
-                        st.by_disco.remove(&d);
-                    }
-                    st.by_index.retain(|_, k| k != key);
-                }
+            if let Some(key) = key_of(&st, *id) {
+                remove_peer(&mut st, key);
             }
         }
     }
@@ -341,8 +356,9 @@ impl MagicSock {
         {
             let mut st = self.inner.state.lock().unwrap();
             st.by_index.clear();
-            for (k, p) in st.peers.iter_mut() {
-                p.tunn = Tunn::new(key.clone(), *k);
+            for p in st.peers.values_mut() {
+                // Made again with the new key when next needed.
+                p.tunn = None;
                 p.best = None;
             }
         }
@@ -359,10 +375,10 @@ impl MagicSock {
         st.filter = Some(filter);
     }
 
-    pub fn apply_patches(&self, patches: &[PeerChange], nodes_by_id: &HashMap<i64, [u8; 32]>) {
+    pub fn apply_patches(&self, patches: &[PeerChange]) {
         let mut st = self.inner.state.lock().unwrap();
         for pc in patches {
-            let Some(key) = nodes_by_id.get(&pc.node_id).copied() else {
+            let Some(key) = key_of(&st, pc.node_id) else {
                 continue;
             };
             let Some(peer) = st.peers.get_mut(&key) else {
@@ -374,18 +390,13 @@ impl MagicSock {
             if let Some(eps) = &pc.endpoints {
                 peer.endpoints = eps.iter().filter_map(|e| e.parse().ok()).collect();
             }
-            let mut new_disco = None;
             if let Some(d) = &pc.disco_key {
                 if let Some(dk) = crate::keys::parse_prefixed(crate::keys::DISCO_PUB_PREFIX, d) {
-                    new_disco = Some((peer.disco, dk));
+                    if peer.disco != Some(dk) {
+                        peer.best = None;
+                    }
                     peer.disco = Some(dk);
                 }
-            }
-            if let Some((old, new)) = new_disco {
-                if let Some(o) = old {
-                    st.by_disco.remove(&o);
-                }
-                st.by_disco.insert(new, key);
             }
         }
     }
@@ -405,7 +416,7 @@ impl MagicSock {
             return;
         };
         peer.last_activity = Some(now);
-        let out = peer.tunn.encapsulate(pkt, now);
+        let out = peer.tunnel(&self.inner.node_key).encapsulate(pkt, now);
         self.refresh_indices(&mut st, key);
         for m in out {
             self.send_wg(&mut st, key, &m, now);
@@ -415,7 +426,7 @@ impl MagicSock {
 
     fn refresh_indices(&self, st: &mut State, key: [u8; 32]) {
         if let Some(p) = st.peers.get(&key) {
-            let current = p.tunn.local_indices();
+            let current: Vec<u32> = p.tunn.iter().flat_map(|t| t.local_indices()).collect();
             st.by_index
                 .retain(|idx, k| *k != key || current.contains(idx));
             for idx in current {
@@ -641,7 +652,10 @@ impl MagicSock {
     }
 
     fn udp_loop(&self) {
-        let mut buf = vec![0u8; 65536];
+        // Big enough for any datagram a peer sends (WireGuard packets are
+        // under 1500 bytes; STUN and disco are small). 64 KB here was most
+        // of an ESP32-C3's free RAM.
+        let mut buf = vec![0u8; UDP_BUF];
         while !self.inner.shutdown.load(Ordering::Relaxed) {
             match self.inner.udp.recv_from(&mut buf) {
                 Ok((n, from)) => {
@@ -672,7 +686,7 @@ impl MagicSock {
                     let Some(peer) = st.peers.get_mut(&key) else {
                         continue;
                     };
-                    let out = peer.tunn.tick(now);
+                    let out = peer.tunn.as_mut().map(|t| t.tick(now)).unwrap_or_default();
                     self.refresh_indices(&mut st, key);
                     for m in out {
                         self.send_wg(&mut st, key, &m, now);
@@ -739,7 +753,7 @@ impl MagicSock {
                     debug!("magicsock: initiation from unknown peer {}", short(&key));
                     return;
                 };
-                match peer.tunn.accept_initiation(ci, now) {
+                match peer.tunnel(&self.inner.node_key).accept_initiation(ci, now) {
                     Ok(resp) => {
                         self.refresh_indices(&mut st, key);
                         self.note_path(&mut st, key, path, now);
@@ -761,7 +775,7 @@ impl MagicSock {
                     st.by_index.remove(&idx);
                     return;
                 };
-                match peer.tunn.consume_response(pkt, now) {
+                match peer.tunnel(&self.inner.node_key).consume_response(pkt, now) {
                     Ok(flushed) => {
                         self.refresh_indices(&mut st, key);
                         self.note_path(&mut st, key, path, now);
@@ -788,7 +802,10 @@ impl MagicSock {
                     st.by_index.remove(&idx);
                     return;
                 };
-                match peer.tunn.consume_transport(pkt, now) {
+                match peer
+                    .tunnel(&self.inner.node_key)
+                    .consume_transport(pkt, now)
+                {
                     Ok(Some(ip)) => {
                         peer.last_activity = Some(now);
                         if !allowed_source(peer, &ip) {
@@ -861,7 +878,14 @@ impl MagicSock {
         };
         let now = Instant::now();
         let mut st = self.inner.state.lock().unwrap();
-        let Some(key) = st.by_disco.get(&sender).copied() else {
+        // A linear search: a tailnet has tens of peers, and a table for this
+        // cost a block of memory that had to grow as peers arrived.
+        let Some(key) = st
+            .peers
+            .iter()
+            .find(|(_, p)| p.disco == Some(sender))
+            .map(|(k, _)| *k)
+        else {
             trace!("magicsock: disco from unknown key {}", short(&sender));
             return;
         };
@@ -901,7 +925,8 @@ impl MagicSock {
                 let Some(peer) = st.peers.get_mut(&key) else {
                     return;
                 };
-                if let Some((addr, sent_at)) = peer.pings.remove(&txid) {
+                let found = peer.pings.iter().position(|(t, _, _)| *t == txid);
+                if let Some((_, addr, sent_at)) = found.map(|i| peer.pings.swap_remove(i)) {
                     let latency = now.duration_since(sent_at);
                     let better = match &peer.best {
                         Some(b) => {
@@ -952,11 +977,12 @@ impl MagicSock {
             let Some(peer) = st.peers.get_mut(&key) else {
                 return;
             };
-            if peer.pings.len() > 32 {
-                peer.pings
-                    .retain(|_, (_, t)| now.duration_since(*t) < Duration::from_secs(10));
+            peer.pings
+                .retain(|(_, _, t)| now.duration_since(*t) < PING_ANSWER_WINDOW);
+            if peer.pings.len() >= MAX_PINGS {
+                peer.pings.remove(0);
             }
-            peer.pings.insert(txid, (addr, now));
+            peer.pings.push((txid, addr, now));
         }
         let msg = DiscoMsg::Ping {
             txid,
@@ -1104,8 +1130,8 @@ impl MagicSock {
                 if home != 0 && !st.stun_latency.is_empty() && r.region_id != home {
                     return None;
                 }
-                let n = r.nodes.iter().find(|n| !n.ipv4.is_empty())?;
-                let ip: Ipv4Addr = n.ipv4.parse().ok()?;
+                let n = r.nodes.iter().find(|n| n.ipv4.is_some())?;
+                let ip: Ipv4Addr = n.ipv4?;
                 let port = if n.stun_port > 0 {
                     n.stun_port as u16
                 } else {
@@ -1173,59 +1199,82 @@ impl MagicSock {
         if let Some(r) = regions.iter().find(|r| r.region_code == preferred_code) {
             return Some(r.region_id);
         }
-        regions.sort_by_key(|r| r.region_id);
+        regions.sort_unstable_by_key(|r| r.region_id);
         regions.first().map(|r| r.region_id)
     }
 }
 
-fn new_peer(local: KeyPair, key: [u8; 32]) -> Peer {
-    Peer {
+fn new_peer(key: [u8; 32]) -> Box<Peer> {
+    Box::new(Peer {
+        id: 0,
         key,
         name: String::new(),
         disco: None,
         allowed_ips: Vec::new(),
         endpoints: Vec::new(),
         home_derp: 0,
-        tunn: Tunn::new(local, key),
+        tunn: None,
         best: None,
-        pings: HashMap::new(),
+        pings: Vec::new(),
         last_ping_round: None,
         last_heartbeat: None,
         last_cmm: None,
         last_activity: None,
+    })
+}
+
+/// The key of the peer with control's node ID `id`.
+fn key_of(st: &State, id: i64) -> Option<[u8; 32]> {
+    st.peers.values().find(|p| p.id == id).map(|p| p.key)
+}
+
+fn remove_peer(st: &mut State, key: [u8; 32]) {
+    if st.peers.remove(&key).is_some() {
+        st.by_index.retain(|_, k| *k != key);
     }
 }
 
-fn apply_node(peer: &mut Peer, n: &Node) {
-    peer.name = n.name.trim_end_matches('.').to_string();
-    let new_disco = crate::keys::parse_prefixed(crate::keys::DISCO_PUB_PREFIX, &n.disco_key);
-    if new_disco != peer.disco {
+/// Takes the node's fields over, so that the parsed map and the peer table
+/// are not both held in full.
+fn apply_node(peer: &mut Peer, n: Node) {
+    peer.id = n.id;
+    let Node {
+        mut name,
+        disco_key,
+        addresses,
+        mut allowed_ips,
+        endpoints,
+        ..
+    } = n;
+    let home_derp = [n.home_derp, n.derp]
+        .into_iter()
+        .find(|r| *r != 0)
+        .unwrap_or(0);
+    if name.ends_with('.') {
+        name.pop();
+    }
+    name.shrink_to_fit();
+    peer.name = name;
+    if disco_key != peer.disco {
         peer.best = None;
     }
-    peer.disco = new_disco;
+    peer.disco = disco_key;
     // Prefix-length-0 routes (exit nodes) are not installed: they would let
     // that peer send with any source address and swallow every destination.
-    peer.allowed_ips = n
-        .allowed_ips
-        .iter()
-        .chain(n.addresses.iter())
-        .filter_map(|c| parse_cidr(c))
-        .filter(|c| c.1 != 0)
-        .collect();
-    peer.allowed_ips.dedup();
-    peer.endpoints = n.endpoints.iter().filter_map(|e| e.parse().ok()).collect();
-    peer.home_derp = n.home_derp_region().unwrap_or(0);
-}
-
-fn parse_cidr(s: &str) -> Option<(IpAddr, u8)> {
-    let (ip, prefix) = match s.split_once('/') {
-        Some((ip, p)) => (ip.parse::<IpAddr>().ok()?, p.parse::<u8>().ok()?),
-        None => {
-            let ip = s.parse::<IpAddr>().ok()?;
-            (ip, if ip.is_ipv4() { 32 } else { 128 })
-        }
-    };
-    Some((ip, prefix))
+    allowed_ips.extend(addresses);
+    allowed_ips.retain(|c| c.1 != 0);
+    allowed_ips.dedup();
+    allowed_ips.shrink_to_fit();
+    peer.allowed_ips = allowed_ips;
+    peer.endpoints = endpoints;
+    // With `small-ram` only the first few are kept: a peer can list a dozen
+    // (every interface address), and the public ones the client found by
+    // STUN come first.
+    if cfg!(feature = "small-ram") {
+        peer.endpoints.truncate(SMALL_RAM_ENDPOINTS);
+    }
+    peer.endpoints.shrink_to_fit();
+    peer.home_derp = home_derp;
 }
 
 fn cidr_contains(cidr: &(IpAddr, u8), ip: IpAddr) -> bool {
@@ -1298,7 +1347,7 @@ fn ip_src(pkt: &[u8]) -> Option<IpAddr> {
 }
 
 fn pick_derp_node(map: &DerpMap, region: i32) -> Option<DerpNode> {
-    let r = map.regions.get(&region.to_string())?;
+    let r = map.regions.get(&region)?;
     r.nodes.iter().find(|n| !n.stun_only).cloned()
 }
 
@@ -1318,8 +1367,8 @@ pub fn guess_local_ip() -> Option<IpAddr> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::keys::{fmt_disco_pub, fmt_node_pub};
     use crate::netstack::NetStack;
+    use crate::types::parse_cidr;
 
     struct NoDialer;
     impl Dialer for NoDialer {
@@ -1346,17 +1395,65 @@ mod tests {
         Node {
             id: 1,
             name: name.into(),
-            key: fmt_node_pub(&ms.node_public()),
-            disco_key: fmt_disco_pub(ms.disco_public()),
-            addresses: vec![format!("{ip}/32")],
-            allowed_ips: vec![format!("{ip}/32")],
-            endpoints: vec![format!("127.0.0.1:{port}")],
+            key: Some(ms.node_public()),
+            disco_key: Some(*ms.disco_public()),
+            addresses: vec![(ip.parse().unwrap(), 32)],
+            allowed_ips: vec![(ip.parse().unwrap(), 32)],
+            endpoints: vec![format!("127.0.0.1:{port}").parse().unwrap()],
             ..Default::default()
         }
     }
 
     /// Two nodes on localhost: TCP through WireGuard through UDP, direct path
     /// discovered with disco pings.
+    #[test]
+    fn peers_are_found_by_node_id_for_changes_removals_and_patches() {
+        let ms = MagicSock::start(
+            KeyPair::generate(),
+            KeyPair::generate(),
+            Arc::new(NoDialer),
+            0,
+            Some("127.0.0.1".parse().unwrap()),
+            256 * 1024,
+            crate::net::std_spawner(),
+        )
+        .unwrap();
+        let node = |id: i64, key: u8, disco: u8| {
+            Box::new(Node {
+                id,
+                name: format!("n{id}."),
+                key: Some([key; 32]),
+                disco_key: Some([disco; 32]),
+                ..Default::default()
+            })
+        };
+        let keys = |ms: &MagicSock| {
+            let st = ms.inner.state.lock().unwrap();
+            let mut k: Vec<(i64, u8, Option<u8>)> = st
+                .peers
+                .values()
+                .map(|p| (p.id, p.key[0], p.disco.map(|d| d[0])))
+                .collect();
+            k.sort();
+            k
+        };
+        ms.set_peers(vec![node(1, 0x11, 0xd1), node(2, 0x22, 0xd2)]);
+        assert_eq!(keys(&ms), [(1, 0x11, Some(0xd1)), (2, 0x22, Some(0xd2))]);
+        // Node 2 comes back with a new key: the old entry goes.
+        ms.peers_changed(vec![node(2, 0x33, 0xd3)]);
+        assert_eq!(keys(&ms), [(1, 0x11, Some(0xd1)), (2, 0x33, Some(0xd3))]);
+        // A patch reaches node 1 by its ID.
+        ms.apply_patches(&[PeerChange {
+            node_id: 1,
+            disco_key: Some(format!("discokey:{}", "e1".repeat(32))),
+            ..Default::default()
+        }]);
+        assert_eq!(keys(&ms)[0], (1, 0x11, Some(0xe1)));
+        ms.peers_removed(&[1, 99]);
+        assert_eq!(keys(&ms), [(2, 0x33, Some(0xd3))]);
+        ms.shutdown();
+    }
+
     #[test]
     fn tcp_over_wireguard_between_two_nodes() {
         let _ = env_logger::builder().is_test(true).try_init();
@@ -1401,8 +1498,18 @@ mod tests {
         b.set_packet_filter(crate::filter::Filter::allow_all());
         ns_a.set_addresses(vec![("100.64.0.1".parse().unwrap(), 10)]);
         ns_b.set_addresses(vec![("100.64.0.2".parse().unwrap(), 10)]);
-        a.set_peers(&[node_for(&b, "b", "100.64.0.2", b.inner.udp_port)]);
-        b.set_peers(&[node_for(&a, "a", "100.64.0.1", a.inner.udp_port)]);
+        a.set_peers(vec![Box::new(node_for(
+            &b,
+            "b",
+            "100.64.0.2",
+            b.inner.udp_port,
+        ))]);
+        b.set_peers(vec![Box::new(node_for(
+            &a,
+            "a",
+            "100.64.0.1",
+            a.inner.udp_port,
+        ))]);
 
         let listener = ns_b.listen(2300);
         let client = ns_a.connect("100.64.0.2:2300".parse().unwrap());

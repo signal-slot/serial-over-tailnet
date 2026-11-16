@@ -423,7 +423,9 @@ impl<'a, C: Console, P: Platform> Shell<'a, C, P> {
         self.line("Scanning Wi-Fi...");
         match self.platform.scan_wifi() {
             Ok(mut aps) => {
-                aps.sort_by_key(|a| -(a.rssi as i32));
+                // Unstable: a stable sort of more than 20 items reserves 4 KB of
+                // stack, more than a small device's shell thread can spare.
+                aps.sort_unstable_by_key(|a| -(a.rssi as i32));
                 aps.dedup_by(|a, b| a.ssid == b.ssid);
                 aps.retain(|a| !a.ssid.is_empty());
                 aps.truncate(15);

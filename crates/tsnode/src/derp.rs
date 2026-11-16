@@ -64,7 +64,7 @@ impl DerpClient {
         } else {
             443
         };
-        let addr: Option<IpAddr> = node.ipv4.parse().ok();
+        let addr: Option<IpAddr> = node.ipv4.map(IpAddr::V4);
         let host = node.host_name.clone();
         let mut conn = if node.insecure_for_tests {
             dialer.dial_tcp(

@@ -3,14 +3,13 @@
 
 use crate::control::{hostinfo, ControlClient};
 use crate::filter::Filter;
-use crate::keys::{fmt_disco_pub, fmt_node_pub, parse_prefixed, KeyPair, NODE_PUB_PREFIX};
+use crate::keys::{fmt_disco_pub, fmt_node_pub, KeyPair};
 use crate::magicsock::{MagicSock, PeerStatus};
 use crate::net::Dialer;
 use crate::netstack::{NetStack, TcpListener};
 use crate::types::*;
 use crate::wireguard::WALL_CLOCK_OFFSET_SECS;
 use log::{debug, info, warn};
-use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -106,7 +105,6 @@ struct Inner {
     status: Mutex<NodeStatus>,
     shutdown: AtomicBool,
     endpoints_dirty: AtomicBool,
-    nodes_by_id: Mutex<HashMap<i64, [u8; 32]>>,
     /// Named ACL rule sets as received from control (`*` is the base set).
     filter_sets: Mutex<std::collections::BTreeMap<String, Vec<FilterRule>>>,
 }
@@ -183,7 +181,6 @@ impl Node {
             }),
             shutdown: AtomicBool::new(false),
             endpoints_dirty: AtomicBool::new(false),
-            nodes_by_id: Mutex::new(HashMap::new()),
             filter_sets: Mutex::new(Default::default()),
         });
         let node = Node {
@@ -452,7 +449,7 @@ impl Node {
         }
     }
 
-    fn handle_map_response(&self, resp: MapResponse) {
+    fn handle_map_response(&self, mut resp: MapResponse) {
         let inner = &self.inner;
         if resp.keep_alive
             && resp.node.is_none()
@@ -480,13 +477,10 @@ impl Node {
         if let Some(node) = &resp.node {
             let mut addrs = Vec::new();
             let mut cidrs = Vec::new();
-            for a in &node.addresses {
-                let ip_str = a.split('/').next().unwrap_or("");
-                if let Ok(ip) = ip_str.parse::<IpAddr>() {
-                    let prefix = if ip.is_ipv4() { 10 } else { 48 };
-                    addrs.push(ip);
-                    cidrs.push((ip, prefix));
-                }
+            for &(ip, _) in &node.addresses {
+                let prefix = if ip.is_ipv4() { 10 } else { 48 };
+                addrs.push(ip);
+                cidrs.push((ip, prefix));
             }
             inner.netstack.set_addresses(cidrs);
             let mut s = inner.status.lock().unwrap();
@@ -523,39 +517,19 @@ impl Node {
                 }
             }
         }
-        if let Some(peers) = &resp.peers {
-            let mut by_id = inner.nodes_by_id.lock().unwrap();
-            by_id.clear();
-            for p in peers {
-                if let Some(k) = parse_prefixed(NODE_PUB_PREFIX, &p.key) {
-                    by_id.insert(p.id, k);
-                }
-            }
-            drop(by_id);
+        if let Some(peers) = resp.peers.take() {
+            let count = peers.len();
             inner.magicsock.set_peers(peers);
-            info!("node: {} peers", peers.len());
+            info!("node: {count} peers");
         }
-        if let Some(changed) = &resp.peers_changed {
-            let mut by_id = inner.nodes_by_id.lock().unwrap();
-            for p in changed {
-                if let Some(k) = parse_prefixed(NODE_PUB_PREFIX, &p.key) {
-                    by_id.insert(p.id, k);
-                }
-            }
-            drop(by_id);
+        if let Some(changed) = resp.peers_changed.take() {
             inner.magicsock.peers_changed(changed);
         }
         if let Some(removed) = &resp.peers_removed {
-            let mut by_id = inner.nodes_by_id.lock().unwrap();
-            let snapshot = by_id.clone();
-            inner.magicsock.peers_removed(removed, &snapshot);
-            for id in removed {
-                by_id.remove(id);
-            }
+            inner.magicsock.peers_removed(removed);
         }
         if let Some(patches) = &resp.peers_changed_patch {
-            let by_id = inner.nodes_by_id.lock().unwrap().clone();
-            inner.magicsock.apply_patches(patches, &by_id);
+            inner.magicsock.apply_patches(patches);
         }
         // ACL: the legacy field replaces everything; the named sets are
         // merged (a null entry deletes that set).

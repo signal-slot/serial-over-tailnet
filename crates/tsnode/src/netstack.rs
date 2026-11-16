@@ -13,12 +13,29 @@ use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
-const RX_BUF: usize = 8 * 1024;
-const TX_BUF: usize = 8 * 1024;
-const USER_TX_LIMIT: usize = 32 * 1024;
+// Per socket (a listener holds one ready), so they count on a small device.
+const RX_BUF: usize = if cfg!(feature = "small-ram") {
+    2 * 1024
+} else {
+    8 * 1024
+};
+const TX_BUF: usize = if cfg!(feature = "small-ram") {
+    2 * 1024
+} else {
+    8 * 1024
+};
+const USER_TX_LIMIT: usize = if cfg!(feature = "small-ram") {
+    8 * 1024
+} else {
+    32 * 1024
+};
 /// Bytes buffered for a reader that is not keeping up; beyond this the
 /// stack stops draining the socket and TCP flow control holds the sender.
-const USER_RX_LIMIT: usize = 16 * 1024;
+const USER_RX_LIMIT: usize = if cfg!(feature = "small-ram") {
+    4 * 1024
+} else {
+    16 * 1024
+};
 /// A peer that stops acknowledging (sleeping laptop, vanished NAT mapping)
 /// is dropped after this long so the bridge becomes free again.
 const DEAD_PEER_TIMEOUT: Duration = Duration::from_secs(120);
@@ -651,8 +668,12 @@ mod tests {
         let n = server.read(&mut buf, Duration::from_secs(5)).unwrap();
         assert_eq!(&buf[..n], b"hello over smoltcp");
 
+        // Written from another thread: more than the buffers hold (far more
+        // with `small-ram`), so the writer has to wait for the reader.
         let big: Vec<u8> = (0..50_000u32).map(|i| i as u8).collect();
-        server.write_all(&big).unwrap();
+        let (to_send, server) = (big.clone(), Arc::new(server));
+        let sender = server.clone();
+        let writer = std::thread::spawn(move || sender.write_all(&to_send).unwrap());
         let mut got = Vec::new();
         while got.len() < big.len() {
             let n = client.read(&mut buf, Duration::from_secs(5)).unwrap();
@@ -660,6 +681,7 @@ mod tests {
             got.extend_from_slice(&buf[..n]);
         }
         assert_eq!(got, big);
+        writer.join().unwrap();
 
         client.close();
         let n = server.read(&mut buf, Duration::from_secs(5)).unwrap();

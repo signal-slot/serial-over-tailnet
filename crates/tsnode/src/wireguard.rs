@@ -202,9 +202,12 @@ pub struct Tunn {
     peer_public: [u8; 32],
     mac1_key_peer: [u8; 32],
     mac1_key_local: [u8; 32],
-    pending: Option<PendingInitiation>,
-    current: Option<Session>,
-    previous: Option<Session>,
+    // Boxed: a peer that never talks to us (most of a tailnet) then costs a
+    // pointer for each instead of the sessions' keys and replay windows,
+    // about a kilobyte per peer, which a device without PSRAM cannot spare.
+    pending: Option<Box<PendingInitiation>>,
+    current: Option<Box<Session>>,
+    previous: Option<Box<Session>>,
     last_initiation_ts: [u8; 12],
     last_sent: Option<Instant>,
     last_received: Option<Instant>,
@@ -287,13 +290,13 @@ impl Tunn {
         msg.extend_from_slice(&mac1);
         msg.extend_from_slice(&[0u8; 16]);
         let attempts = self.pending.as_ref().map(|p| p.attempts + 1).unwrap_or(1);
-        self.pending = Some(PendingInitiation {
+        self.pending = Some(Box::new(PendingInitiation {
             local_index,
             ephemeral_secret: e,
             state: s,
             sent_at: now,
             attempts,
-        });
+        }));
         msg
     }
 
@@ -418,7 +421,7 @@ impl Tunn {
             confirmed: true,
         };
         self.previous = self.current.take();
-        self.current = Some(session);
+        self.current = Some(Box::new(session));
         Ok(self.flush_queue(now))
     }
 
@@ -481,7 +484,7 @@ impl Tunn {
             confirmed: false,
         };
         self.previous = self.current.take();
-        self.current = Some(session);
+        self.current = Some(Box::new(session));
         // A handshake from the peer supersedes any initiation of ours.
         self.pending = None;
         Ok(msg)

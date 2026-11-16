@@ -6,7 +6,7 @@
 use blake2::digest::consts::U16;
 use blake2::digest::{KeyInit, Mac};
 use blake2::{Blake2s256, Blake2sMac, Digest};
-use chacha20poly1305::aead::{Aead, Payload};
+use chacha20poly1305::aead::{Aead, AeadInPlace, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Key, Nonce};
 
 pub const KEY_LEN: usize = 32;
@@ -121,6 +121,19 @@ pub fn aead_decrypt(
                 aad: ad,
             },
         )
+        .map_err(|_| CryptoError)
+}
+
+/// Decrypts `buf` (ciphertext and tag) in place; on success `buf` is the
+/// plaintext. Spares a second buffer the size of the message.
+pub fn aead_decrypt_in_place(
+    key: &[u8; 32],
+    counter: u64,
+    buf: &mut Vec<u8>,
+    ad: &[u8],
+) -> Result<(), CryptoError> {
+    ChaCha20Poly1305::new(Key::from_slice(key))
+        .decrypt_in_place(&nonce_from_counter(counter), ad, buf)
         .map_err(|_| CryptoError)
 }
 

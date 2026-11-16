@@ -204,8 +204,7 @@ impl ControlClient {
             )));
         }
         Ok(MapStream {
-            h2,
-            id,
+            src: H2Body { h2, id },
             buf: Vec::new(),
             done: false,
         })
@@ -254,39 +253,58 @@ pub fn fetch_server_key(dialer: &dyn Dialer, url: &ControlUrl) -> io::Result<[u8
 
 /// A streaming `/machine/map` response: a sequence of little-endian
 /// length-prefixed JSON messages.
-pub struct MapStream {
-    h2: H2Conn,
-    id: u32,
+pub struct MapStream<S = H2Body> {
+    src: S,
     buf: Vec<u8>,
     done: bool,
 }
 
-impl MapStream {
+/// Where the bytes of a map stream come from, a piece at a time.
+pub trait Chunks {
+    /// The next piece, `Ok(None)` at the end. Blocks up to `timeout`.
+    fn chunk(&mut self, timeout: Duration) -> io::Result<Option<Vec<u8>>>;
+}
+
+/// The body of an HTTP/2 response.
+pub struct H2Body {
+    h2: H2Conn,
+    id: u32,
+}
+
+impl Chunks for H2Body {
+    fn chunk(&mut self, timeout: Duration) -> io::Result<Option<Vec<u8>>> {
+        self.h2.read_body(self.id, timeout)
+    }
+}
+
+impl<S: Chunks> MapStream<S> {
     /// Returns the next `MapResponse`, `Ok(None)` when the server ends the
-    /// stream. Blocks up to `timeout` (or the built-in keep-alive timeout).
+    /// stream. Blocks up to `timeout` (or the built-in keep-alive timeout)
+    /// for a message to begin.
+    ///
+    /// A message is parsed while it arrives and is never held as a whole:
+    /// the first one lists every peer and every DERP region and can be far
+    /// larger than what a small device has free.
     pub fn next(&mut self, timeout: Duration) -> io::Result<Option<MapResponse>> {
         let timeout = timeout.min(MAP_STREAM_TIMEOUT);
-        loop {
-            if let Some(msg) = self.take_message()? {
-                return Ok(Some(msg));
-            }
+        // Every message is `u32 LE length` + JSON, streaming or not. Nothing
+        // of a message is consumed until its length is complete, so a
+        // timeout here leaves the stream where it was.
+        while self.buf.len() < 4 {
             if self.done {
-                return Ok(None);
+                return if self.buf.is_empty() {
+                    Ok(None)
+                } else {
+                    Err(io::Error::new(
+                        io::ErrorKind::UnexpectedEof,
+                        "map stream ended inside a message",
+                    ))
+                };
             }
-            match self.h2.read_body(self.id, timeout)? {
+            match self.src.chunk(timeout)? {
                 Some(chunk) => self.buf.extend_from_slice(&chunk),
                 None => self.done = true,
             }
-        }
-    }
-
-    fn take_message(&mut self) -> io::Result<Option<MapResponse>> {
-        if self.buf.is_empty() {
-            return Ok(None);
-        }
-        // Every message is `u32 LE length` + JSON, streaming or not.
-        if self.buf.len() < 4 {
-            return Ok(None);
         }
         let len = u32::from_le_bytes([self.buf[0], self.buf[1], self.buf[2], self.buf[3]]) as usize;
         if len > 8 << 20 {
@@ -295,18 +313,94 @@ impl MapStream {
                 "map message too large",
             ));
         }
-        if self.buf.len() < 4 + len {
-            return Ok(None);
-        }
-        let msg = decode_map(&self.buf[4..4 + len])?;
-        self.buf.drain(..4 + len);
+        self.buf.drain(..4);
+        let mut body = MessageReader {
+            stream: self,
+            left: len,
+            pos: 0,
+        };
+        let msg = serde_json::from_reader(&mut body);
+        // Whatever the parser left unread of this message (after an error,
+        // or trailing white space) is skipped, so the next message starts at
+        // its length.
+        let skipped = body.skip_rest();
+        let msg = msg.map_err(|e| {
+            io::Error::new(io::ErrorKind::InvalidData, format!("map: bad json: {e}"))
+        })?;
+        skipped?;
         Ok(Some(msg))
     }
 }
 
-fn decode_map(bytes: &[u8]) -> io::Result<MapResponse> {
-    serde_json::from_slice(bytes)
-        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("map: bad json: {e}")))
+/// The bytes of one map message: what is already in the stream's buffer,
+/// then what the HTTP/2 stream delivers, up to the message's length.
+struct MessageReader<'a, S> {
+    stream: &'a mut MapStream<S>,
+    /// Bytes of the message not yet handed out.
+    left: usize,
+    /// How much of `stream.buf` has been handed out.
+    pos: usize,
+}
+
+impl<S: Chunks> MessageReader<'_, S> {
+    /// Makes `stream.buf[pos..]` non-empty unless the message is finished.
+    fn fill(&mut self) -> io::Result<()> {
+        while self.left > 0 && self.pos >= self.stream.buf.len() {
+            self.stream.buf.clear();
+            self.pos = 0;
+            if self.stream.done {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "map stream ended inside a message",
+                ));
+            }
+            // Inside a message the server is sending: a pause this long is
+            // a dead connection, and the stream cannot be resumed after it.
+            match self.stream.src.chunk(REQUEST_TIMEOUT) {
+                Ok(Some(chunk)) => self.stream.buf = chunk,
+                Ok(None) => self.stream.done = true,
+                Err(e) => {
+                    self.stream.done = true;
+                    return Err(e);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Drops the rest of the message and gives the buffer back with only
+    /// what follows the message in it.
+    fn skip_rest(mut self) -> io::Result<()> {
+        let mut result = Ok(());
+        while self.left > 0 {
+            if let Err(e) = self.fill() {
+                result = Err(e);
+                break;
+            }
+            let n = (self.stream.buf.len() - self.pos).min(self.left);
+            self.pos += n;
+            self.left -= n;
+        }
+        let pos = self.pos.min(self.stream.buf.len());
+        self.stream.buf.drain(..pos);
+        result
+    }
+}
+
+impl<S: Chunks> io::Read for MessageReader<'_, S> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        if self.left == 0 || out.is_empty() {
+            return Ok(0);
+        }
+        self.fill()?;
+        let n = (self.stream.buf.len() - self.pos)
+            .min(self.left)
+            .min(out.len());
+        out[..n].copy_from_slice(&self.stream.buf[self.pos..self.pos + n]);
+        self.pos += n;
+        self.left -= n;
+        Ok(n)
+    }
 }
 
 /// Builds the `Hostinfo` we advertise.
@@ -337,6 +431,98 @@ pub fn hostinfo(hostname: &str, version: &str, preferred_derp: i32) -> Hostinfo 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A map stream fed from prepared pieces; `None` is a timeout.
+    struct Pieces(std::collections::VecDeque<Option<Vec<u8>>>);
+
+    impl Chunks for Pieces {
+        fn chunk(&mut self, _timeout: Duration) -> io::Result<Option<Vec<u8>>> {
+            match self.0.pop_front() {
+                Some(Some(piece)) => Ok(Some(piece)),
+                Some(None) => Err(io::Error::new(io::ErrorKind::TimedOut, "timeout")),
+                None => Ok(None),
+            }
+        }
+    }
+
+    fn stream(pieces: Vec<Option<Vec<u8>>>) -> MapStream<Pieces> {
+        MapStream {
+            src: Pieces(pieces.into()),
+            buf: Vec::new(),
+            done: false,
+        }
+    }
+
+    fn message(json: &str) -> Vec<u8> {
+        let mut m = (json.len() as u32).to_le_bytes().to_vec();
+        m.extend_from_slice(json.as_bytes());
+        m
+    }
+
+    #[test]
+    fn map_messages_are_read_across_any_split() {
+        let first = r#"{"Seq":1,"Domain":"example.ts.net","Peers":[{"ID":7,"Name":"a."},{"ID":8,"Name":"b."}]}"#;
+        let second = r#"{"Seq":2,"KeepAlive":true}"#;
+        let mut all = message(first);
+        all.extend(message(second));
+        // Every way of cutting the two messages into two pieces, and byte by byte.
+        let mut splits: Vec<Vec<Option<Vec<u8>>>> = (0..=all.len())
+            .map(|i| vec![Some(all[..i].to_vec()), Some(all[i..].to_vec())])
+            .collect();
+        splits.push(all.iter().map(|b| Some(vec![*b])).collect());
+        for pieces in splits {
+            let mut s = stream(
+                pieces
+                    .into_iter()
+                    .filter(|p| p.as_ref().is_some_and(|p| !p.is_empty()))
+                    .collect(),
+            );
+            let a = s.next(Duration::from_secs(1)).unwrap().unwrap();
+            assert_eq!((a.seq, a.domain.as_str()), (1, "example.ts.net"));
+            assert_eq!(
+                a.peers.unwrap().iter().map(|p| p.id).collect::<Vec<_>>(),
+                [7, 8]
+            );
+            let b = s.next(Duration::from_secs(1)).unwrap().unwrap();
+            assert_eq!((b.seq, b.keep_alive), (2, true));
+            assert!(s.next(Duration::from_secs(1)).unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn a_timeout_before_a_message_leaves_the_stream_usable() {
+        let m = message(r#"{"Seq":5}"#);
+        let mut s = stream(vec![
+            None,
+            Some(m[..2].to_vec()),
+            None,
+            Some(m[2..].to_vec()),
+        ]);
+        for _ in 0..2 {
+            let e = s.next(Duration::from_secs(1)).unwrap_err();
+            assert_eq!(e.kind(), io::ErrorKind::TimedOut);
+        }
+        assert_eq!(s.next(Duration::from_secs(1)).unwrap().unwrap().seq, 5);
+    }
+
+    #[test]
+    fn a_bad_message_is_skipped_and_the_next_one_is_read() {
+        let mut all = message(r#"{"Seq":"not a number"} trailing"#);
+        all.extend(message(r#"{"Seq":9}"#));
+        let mut s = stream(vec![Some(all)]);
+        let e = s.next(Duration::from_secs(1)).unwrap_err();
+        assert_eq!(e.kind(), io::ErrorKind::InvalidData);
+        assert_eq!(s.next(Duration::from_secs(1)).unwrap().unwrap().seq, 9);
+    }
+
+    #[test]
+    fn a_stream_that_ends_inside_a_message_is_an_error() {
+        let m = message(r#"{"Seq":5}"#);
+        let mut s = stream(vec![Some(m[..7].to_vec())]);
+        assert!(s.next(Duration::from_secs(1)).is_err());
+        let mut s = stream(vec![Some(m[..2].to_vec())]);
+        assert!(s.next(Duration::from_secs(1)).is_err());
+    }
 
     #[test]
     fn parses_control_urls() {

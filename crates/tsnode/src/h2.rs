@@ -39,8 +39,17 @@ const MAX_FRAME_SIZE: usize = 16_384;
 const MAX_HEADER_BLOCK: usize = 64 * 1024;
 
 const DEFAULT_WINDOW: u32 = 65_535;
-/// Window we advertise per stream and add to the connection.
-const OUR_WINDOW: u32 = 256 * 1024;
+/// Window we advertise per stream and add to the connection. With
+/// `small-ram` it is small, so that the server's DATA frames stay small: a
+/// frame is held whole while it is decrypted and handed on, and 16 KB frames
+/// (the most a peer may send) did not fit an ESP32-C3 next to the network
+/// map being parsed. The connection window cannot go below the default, so
+/// the stream window is what limits the frames.
+const OUR_WINDOW: u32 = if cfg!(feature = "small-ram") {
+    4 * 1024
+} else {
+    256 * 1024
+};
 const WINDOW_UPDATE_THRESHOLD: u32 = OUR_WINDOW / 2;
 
 #[derive(Default)]
@@ -100,13 +109,15 @@ impl H2Conn {
         }
         push_frame(&mut out, FRAME_SETTINGS, 0, 0, &settings);
         // Grow the connection-level receive window.
-        push_frame(
-            &mut out,
-            FRAME_WINDOW_UPDATE,
-            0,
-            0,
-            &(OUR_WINDOW - DEFAULT_WINDOW).to_be_bytes(),
-        );
+        if OUR_WINDOW > DEFAULT_WINDOW {
+            push_frame(
+                &mut out,
+                FRAME_WINDOW_UPDATE,
+                0,
+                0,
+                &(OUR_WINDOW - DEFAULT_WINDOW).to_be_bytes(),
+            );
+        }
         conn.write_all(&out)?;
         conn.flush()?;
         Ok(H2Conn {

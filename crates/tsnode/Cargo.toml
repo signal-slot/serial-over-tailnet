@@ -21,3 +21,7 @@ smoltcp = { version = "0.12", default-features = false, features = ["std", "log"
 
 [dev-dependencies]
 env_logger = "0.11"
+
+[features]
+# Smaller TCP buffers, for a device with a few hundred kilobytes of RAM in all.
+small-ram = []

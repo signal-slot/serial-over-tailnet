@@ -2,7 +2,7 @@
 //! HTTP/1.1 `Upgrade: tailscale-control-protocol` request, followed by
 //! length-prefixed encrypted records over which HTTP/2 is spoken.
 
-use crate::crypto::{aead_decrypt, aead_encrypt, x25519_generate, x25519_public, TAG_LEN};
+use crate::crypto::{aead_encrypt, x25519_generate, x25519_public, TAG_LEN};
 use crate::http1;
 use crate::net::Conn;
 use crate::noise::SymmetricState;
@@ -39,14 +39,6 @@ fn be_nonce_key(counter: u64) -> u64 {
 
 fn aead_encrypt_be(key: &[u8; 32], counter: u64, plaintext: &[u8]) -> Vec<u8> {
     aead_encrypt(key, be_nonce_key(counter), plaintext, &[])
-}
-
-fn aead_decrypt_be(
-    key: &[u8; 32],
-    counter: u64,
-    ciphertext: &[u8],
-) -> Result<Vec<u8>, crate::crypto::CryptoError> {
-    aead_decrypt(key, be_nonce_key(counter), ciphertext, &[])
 }
 
 fn prologue(version: u16) -> Vec<u8> {
@@ -260,17 +252,22 @@ impl NoiseConn {
                 "short noise record",
             ));
         }
-        let mut ct = vec![0u8; len];
-        self.read_raw_exact(&mut ct)?;
-        let pt = aead_decrypt_be(&self.rx_key, self.rx_n, &ct).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "noise record authentication failed",
-            )
-        })?;
-        self.rx_n += 1;
-        self.plain_pending = pt;
+        // The record is read into the plaintext buffer and decrypted there,
+        // reusing its allocation from record to record.
+        let mut buf = std::mem::take(&mut self.plain_pending);
+        buf.clear();
+        buf.resize(len, 0);
         self.plain_pos = 0;
+        self.read_raw_exact(&mut buf)?;
+        crate::crypto::aead_decrypt_in_place(&self.rx_key, be_nonce_key(self.rx_n), &mut buf, &[])
+            .map_err(|_| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "noise record authentication failed",
+                )
+            })?;
+        self.rx_n += 1;
+        self.plain_pending = buf;
         Ok(())
     }
 }

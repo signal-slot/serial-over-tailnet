@@ -2,6 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 /// The capability version we claim. Kept deliberately conservative so the
 /// control server uses the well-understood, older response shapes.
@@ -111,43 +112,134 @@ pub struct MapRequest {
     pub read_only: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// A node of the tailnet as the network map describes it.
+///
+/// Only what the node uses is declared, and keys and addresses are parsed
+/// while the message is read: the parser skips the other fields without
+/// storing them, and a key takes 32 bytes instead of a 72-character string.
+/// That matters on a device without PSRAM: the first map of a tailnet of 48
+/// peers (69 KB of JSON) did not fit an ESP32-C3 with every field kept as
+/// text.
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct Node {
     #[serde(rename = "ID")]
     pub id: i64,
-    #[serde(rename = "StableID")]
-    pub stable_id: String,
     pub name: String,
-    pub user: i64,
-    pub key: String,
-    pub key_expiry: String,
-    pub machine: String,
-    pub disco_key: String,
-    pub addresses: Vec<String>,
-    #[serde(rename = "AllowedIPs")]
-    pub allowed_ips: Vec<String>,
-    pub endpoints: Vec<String>,
-    /// Legacy home DERP encoding: `127.3.3.40:<region>`.
-    #[serde(rename = "DERP")]
-    pub derp: String,
+    /// `None` if absent or not a valid `nodekey:`.
+    #[serde(deserialize_with = "de::node_key")]
+    pub key: Option<[u8; 32]>,
+    #[serde(deserialize_with = "de::disco_key")]
+    pub disco_key: Option<[u8; 32]>,
+    /// The node's own addresses, with their prefix lengths.
+    #[serde(deserialize_with = "de::cidrs")]
+    pub addresses: Vec<(IpAddr, u8)>,
+    #[serde(rename = "AllowedIPs", deserialize_with = "de::cidrs")]
+    pub allowed_ips: Vec<(IpAddr, u8)>,
+    #[serde(deserialize_with = "de::socket_addrs")]
+    pub endpoints: Vec<SocketAddr>,
+    /// Legacy home DERP encoding `127.3.3.40:<region>`, as the region; 0 if
+    /// absent.
+    #[serde(rename = "DERP", deserialize_with = "de::derp_region")]
+    pub derp: i32,
     #[serde(rename = "HomeDERP")]
     pub home_derp: i32,
-    pub hostinfo: Hostinfo,
-    pub online: Option<bool>,
     pub machine_authorized: bool,
 }
 
 impl Node {
     pub fn home_derp_region(&self) -> Option<i32> {
-        if self.home_derp != 0 {
-            return Some(self.home_derp);
+        [self.home_derp, self.derp].into_iter().find(|r| *r != 0)
+    }
+}
+
+/// `addr/len`, or a bare address (a host route).
+pub(crate) fn parse_cidr(s: &str) -> Option<(IpAddr, u8)> {
+    let (ip, prefix) = match s.split_once('/') {
+        Some((ip, p)) => (ip.parse::<IpAddr>().ok()?, p.parse::<u8>().ok()?),
+        None => {
+            let ip = s.parse::<IpAddr>().ok()?;
+            (ip, if ip.is_ipv4() { 32 } else { 128 })
         }
-        self.derp
+    };
+    Some((ip, prefix))
+}
+
+/// Parsers for the fields of [`Node`] that are kept in binary form. A value
+/// that does not parse is dropped, as the code that used the text did; a
+/// `null` is taken as absent.
+mod de {
+    use crate::keys::{parse_prefixed, DISCO_PUB_PREFIX, NODE_PUB_PREFIX};
+    use serde::de::{SeqAccess, Visitor};
+    use serde::{Deserialize, Deserializer};
+    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+    fn text<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+        Ok(Option::<String>::deserialize(d)?.unwrap_or_default())
+    }
+
+    fn list<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<String>, D::Error> {
+        Ok(Option::<Vec<String>>::deserialize(d)?.unwrap_or_default())
+    }
+
+    pub fn node_key<'de, D: Deserializer<'de>>(d: D) -> Result<Option<[u8; 32]>, D::Error> {
+        Ok(parse_prefixed(NODE_PUB_PREFIX, &text(d)?))
+    }
+
+    pub fn disco_key<'de, D: Deserializer<'de>>(d: D) -> Result<Option<[u8; 32]>, D::Error> {
+        Ok(parse_prefixed(DISCO_PUB_PREFIX, &text(d)?))
+    }
+
+    pub fn cidrs<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<(IpAddr, u8)>, D::Error> {
+        Ok(list(d)?
+            .iter()
+            .filter_map(|c| super::parse_cidr(c))
+            .collect())
+    }
+
+    pub fn socket_addrs<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<SocketAddr>, D::Error> {
+        Ok(list(d)?.iter().filter_map(|e| e.parse().ok()).collect())
+    }
+
+    pub fn ipv4<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Ipv4Addr>, D::Error> {
+        Ok(text(d)?.parse().ok())
+    }
+
+    pub fn derp_nodes<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<super::DerpNode>, D::Error> {
+        struct Keep;
+        impl<'de> Visitor<'de> for Keep {
+            type Value = Vec<super::DerpNode>;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("a list of DERP nodes")
+            }
+            fn visit_unit<E>(self) -> Result<Self::Value, E> {
+                Ok(Vec::new())
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut kept = Vec::new();
+                let (mut have_relay, mut have_stun) = (false, false);
+                while let Some(n) = seq.next_element::<super::DerpNode>()? {
+                    let relay = !n.stun_only && !have_relay;
+                    let stun = n.ipv4.is_some() && !have_stun;
+                    if relay || stun {
+                        have_relay |= relay;
+                        have_stun |= stun;
+                        kept.push(n);
+                    }
+                }
+                kept.shrink_to_fit();
+                Ok(kept)
+            }
+        }
+        d.deserialize_any(Keep)
+    }
+
+    pub fn derp_region<'de, D: Deserializer<'de>>(d: D) -> Result<i32, D::Error> {
+        Ok(text(d)?
             .rsplit(':')
             .next()
-            .and_then(|s| s.parse().ok())
-            .filter(|r| *r != 0)
+            .and_then(|r| r.parse().ok())
+            .unwrap_or(0))
     }
 }
 
@@ -161,22 +253,17 @@ pub struct PeerChange {
     pub endpoints: Option<Vec<String>>,
     pub key: Option<String>,
     pub disco_key: Option<String>,
-    pub online: Option<bool>,
-    pub key_expiry: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+/// A DERP server as the map gives it; only what dialing and STUN use.
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct DerpNode {
-    pub name: String,
     #[serde(rename = "RegionID")]
     pub region_id: i32,
     pub host_name: String,
-    pub cert_name: String,
-    #[serde(rename = "IPv4")]
-    pub ipv4: String,
-    #[serde(rename = "IPv6")]
-    pub ipv6: String,
+    #[serde(rename = "IPv4", deserialize_with = "de::ipv4")]
+    pub ipv4: Option<Ipv4Addr>,
     #[serde(rename = "STUNPort")]
     pub stun_port: i32,
     #[serde(rename = "STUNOnly")]
@@ -184,25 +271,28 @@ pub struct DerpNode {
     #[serde(rename = "DERPPort")]
     pub derp_port: i32,
     pub insecure_for_tests: bool,
-    pub can_port80: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct DerpRegion {
     #[serde(rename = "RegionID")]
     pub region_id: i32,
     pub region_code: String,
-    pub region_name: String,
     pub avoid: bool,
+    /// The nodes that are ever used: the first that relays (`STUNOnly`
+    /// false), which is the one dialed, and the first with an IPv4 address,
+    /// which is the one probed with STUN; one node if it is both. A region
+    /// lists several, and there are some thirty regions.
+    #[serde(deserialize_with = "de::derp_nodes")]
     pub nodes: Vec<DerpNode>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct DerpMap {
-    pub regions: HashMap<String, DerpRegion>,
-    pub omit_default_regions: bool,
+    /// By region ID.
+    pub regions: HashMap<i32, DerpRegion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -248,18 +338,20 @@ pub struct FilterRule {
     pub ip_proto: Vec<i32>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct MapResponse {
-    pub map_session_handle: String,
     pub seq: i64,
     pub keep_alive: bool,
     pub ping_request: Option<PingRequest>,
     pub node: Option<Node>,
     #[serde(rename = "DERPMap")]
     pub derp_map: Option<DerpMap>,
-    pub peers: Option<Vec<Node>>,
-    pub peers_changed: Option<Vec<Node>>,
+    /// Each node boxed: a list of 50 in one block (about 9 KB on a 32-bit
+    /// chip, doubling as it grows) was more than an ESP32-C3 had free in
+    /// one piece while the map was read.
+    pub peers: Option<Vec<Box<Node>>>,
+    pub peers_changed: Option<Vec<Box<Node>>>,
     pub peers_removed: Option<Vec<i64>>,
     pub peers_changed_patch: Option<Vec<PeerChange>>,
     /// Legacy whole-filter replacement. `Some(vec![])` denies everything.
@@ -267,11 +359,7 @@ pub struct MapResponse {
     /// Named filter sets (capability version 81+): `*` is the base set, a
     /// `null` value deletes the named set.
     pub packet_filters: Option<HashMap<String, Option<Vec<FilterRule>>>>,
-    pub online_change: Option<HashMap<String, bool>>,
-    #[serde(rename = "DNSConfig")]
-    pub dns_config: Option<DnsConfig>,
     pub domain: String,
-    pub user_profiles: Option<Vec<UserProfile>>,
     pub health: Option<Vec<String>>,
     pub control_time: Option<String>,
 }
@@ -279,6 +367,69 @@ pub struct MapResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn node_keys_and_addresses_are_parsed_and_the_rest_skipped() {
+        let key = "1".repeat(64);
+        let json = format!(
+            r#"{{"ID":5,"StableID":"n5","Name":"pi.example.ts.net.","User":3,
+                "Key":"nodekey:{key}","KeyExpiry":"2027-01-01T00:00:00Z",
+                "DiscoKey":"discokey:{key}","Machine":"mkey:00",
+                "Addresses":["100.64.0.9/32","fd7a:115c:a1e0::9/128"],
+                "AllowedIPs":["100.64.0.9/32","192.168.1.0/24","bad"],
+                "Endpoints":["198.51.100.7:41641","[2001:db8::7]:41641","nonsense"],
+                "DERP":"127.3.3.40:9","Hostinfo":{{"OS":"linux","Services":[{{"Port":22}}]}},
+                "Online":true,"MachineAuthorized":true}}"#
+        );
+        let n: Node = serde_json::from_str(&json).unwrap();
+        assert_eq!(n.key, Some([0x11; 32]));
+        assert_eq!(n.disco_key, Some([0x11; 32]));
+        assert_eq!(n.addresses[0], ("100.64.0.9".parse().unwrap(), 32));
+        assert_eq!(n.addresses[1].1, 128);
+        assert_eq!(n.allowed_ips.len(), 2);
+        assert_eq!(n.allowed_ips[1], ("192.168.1.0".parse().unwrap(), 24));
+        assert_eq!(n.endpoints.len(), 2);
+        assert_eq!(n.endpoints[1].port(), 41641);
+        assert_eq!(n.home_derp_region(), Some(9));
+        assert!(n.machine_authorized);
+        // A null where a value is expected, and a key that is not one.
+        let n: Node =
+            serde_json::from_str(r#"{"Key":"nodekey:zz","DiscoKey":null,"Endpoints":null}"#)
+                .unwrap();
+        assert_eq!((n.key, n.disco_key, n.endpoints.len()), (None, None, 0));
+    }
+
+    #[test]
+    fn a_derp_region_keeps_the_relay_and_the_stun_node_only() {
+        let m: DerpMap = serde_json::from_str(
+            r#"{"Regions":{"7":{"RegionID":7,"RegionCode":"tok","Nodes":[
+                {"Name":"7s","HostName":"s.example","STUNOnly":true},
+                {"Name":"7a","HostName":"a.example","IPv4":"203.0.113.1","CertName":"x"},
+                {"Name":"7b","HostName":"b.example","IPv4":"203.0.113.2"}]},
+              "9":{"RegionID":9,"Nodes":[
+                {"HostName":"c.example"},
+                {"HostName":"d.example","IPv4":"203.0.113.4","STUNOnly":true},
+                {"HostName":"e.example","IPv4":"203.0.113.5"}]},
+              "11":{"RegionID":11,"Nodes":null}}}"#,
+        )
+        .unwrap();
+        let hosts = |r: i32| -> Vec<&str> {
+            m.regions[&r]
+                .nodes
+                .iter()
+                .map(|n| n.host_name.as_str())
+                .collect()
+        };
+        // 7: the first relay also has the first IPv4.
+        assert_eq!(hosts(7), ["a.example"]);
+        assert_eq!(
+            m.regions[&7].nodes[0].ipv4,
+            Some("203.0.113.1".parse().unwrap())
+        );
+        // 9: the relay has no address; the STUN node is a later one.
+        assert_eq!(hosts(9), ["c.example", "d.example"]);
+        assert!(hosts(11).is_empty());
+    }
 
     #[test]
     fn node_derp_parsing() {
