@@ -23,24 +23,27 @@ mod console;
 mod nvs_store;
 mod platform;
 mod tls;
-#[cfg(any(feature = "board-adapter", feature = "board-xiao-s3"))]
+#[cfg(any(feature = "board-adapter", board_xiao))]
 mod uart_link;
-// Compiled for every board (`bridge` and `platform` use its types); a board
-// without a USB host never starts it.
-#[cfg_attr(feature = "board-xiao-s3", allow(dead_code))]
+// Not for a board without a USB host (the ESP32-C3 has no host controller).
+#[cfg(not(board_xiao))]
 mod usb_host;
 mod wifi;
 
 use adapter_core::shell::{Platform, Shell, DEFAULT_TCP_PORT};
 use anyhow::{Context, Result};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
+#[cfg(not(feature = "board-xiao-c3"))]
 use esp_idf_svc::hal::gpio::AnyIOPin;
 use esp_idf_svc::hal::peripherals::Peripherals;
+#[cfg(not(feature = "board-xiao-c3"))]
 use esp_idf_svc::hal::uart::UartDriver;
 use esp_idf_svc::log::EspLogger;
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use log::{info, warn};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
+#[cfg(not(board_xiao))]
+use std::sync::OnceLock;
 use std::time::Duration;
 
 pub const FIRMWARE_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -51,7 +54,7 @@ pub const DEFAULT_BAUD: u32 = 115_200;
 #[cfg(feature = "board-adapter")]
 pub const UART_HEADER_INTERFACE: u16 = 8;
 /// The XIAO has no USB host: its UART is the only channel, on the first port.
-#[cfg(feature = "board-xiao-s3")]
+#[cfg(board_xiao)]
 pub const UART_HEADER_INTERFACE: u16 = 0;
 
 fn main() -> Result<()> {
@@ -70,7 +73,10 @@ fn main() -> Result<()> {
     let nvs_part = EspDefaultNvsPartition::take()?;
     let store = Arc::new(nvs_store::NvsStore::open(nvs_part.clone(), "tsusb")?);
 
-    // UART0 (GPIO43/44 on ESP32-S3) for the shell; log output shares the pins.
+    // UART0 (GPIO43/44) for the shell; log output shares the pins. Not on
+    // the XIAO ESP32C3, whose RAM has no room for a second shell; its log
+    // still goes to UART0 (D6 and D7) and its USB port has the shell.
+    #[cfg(not(feature = "board-xiao-c3"))]
     let uart = UartDriver::new(
         peripherals.uart0,
         peripherals.pins.gpio43,
@@ -80,7 +86,12 @@ fn main() -> Result<()> {
         &Default::default(),
     )?;
 
-    let mut boot_button = button::Button::new(peripherals.pins.gpio0)?;
+    // BOOT: GPIO0 on the ESP32-S3, GPIO9 on the ESP32-C3.
+    #[cfg(not(feature = "board-xiao-c3"))]
+    let boot_pin = peripherals.pins.gpio0;
+    #[cfg(feature = "board-xiao-c3")]
+    let boot_pin = peripherals.pins.gpio9;
+    let mut boot_button = button::Button::new(boot_pin)?;
     let setup_requested = boot_button.held_at_boot();
 
     let config = nvs_store::load_config(store.as_ref());
@@ -132,12 +143,13 @@ fn main() -> Result<()> {
     // The host is started below, after the node, so a target present at
     // boot finds a node to be bridged on. A board without a USB host keeps
     // the CDC device in both modes.
-    let cdc = if setup_mode || cfg!(feature = "board-xiao-s3") {
-        match console::UsbSerialConsole::install(
-            peripherals.usb_serial,
-            peripherals.pins.gpio19,
-            peripherals.pins.gpio20,
-        ) {
+    // USB D- and D+: GPIO19/20 on the ESP32-S3, GPIO18/19 on the ESP32-C3.
+    #[cfg(not(feature = "board-xiao-c3"))]
+    let (usb_dm, usb_dp) = (peripherals.pins.gpio19, peripherals.pins.gpio20);
+    #[cfg(feature = "board-xiao-c3")]
+    let (usb_dm, usb_dp) = (peripherals.pins.gpio18, peripherals.pins.gpio19);
+    let cdc = if setup_mode || cfg!(board_xiao) {
+        match console::UsbSerialConsole::install(peripherals.usb_serial, usb_dm, usb_dp) {
             Ok(c) => Some(c),
             Err(e) => {
                 warn!("setup: USB serial console unavailable: {e:#}; use UART0");
@@ -152,6 +164,7 @@ fn main() -> Result<()> {
         store: store.clone(),
         wifi: wifi.clone(),
         node: std::sync::Mutex::new(None),
+        #[cfg(not(board_xiao))]
         usb: OnceLock::new(),
         setup_mode,
         board,
@@ -188,7 +201,12 @@ fn main() -> Result<()> {
     // one 4-pin socket there carries the whole link.
     #[cfg(feature = "board-xiao-s3")]
     let (uart_tx, uart_rx) = (peripherals.pins.gpio9, peripherals.pins.gpio8);
-    #[cfg(any(feature = "board-adapter", feature = "board-xiao-s3"))]
+    // On the XIAO ESP32C3, D9 is GPIO9, the boot-mode pin: a target's TX on
+    // it (or an unpowered target) could hold it low at reset. D4 (GPIO6) and
+    // D5 (GPIO7) have no such role.
+    #[cfg(feature = "board-xiao-c3")]
+    let (uart_tx, uart_rx) = (peripherals.pins.gpio6, peripherals.pins.gpio7);
+    #[cfg(any(feature = "board-adapter", board_xiao))]
     let mut uart_header = Some(
         uart_link::UartSerial::new(
             peripherals.uart1,
@@ -207,7 +225,7 @@ fn main() -> Result<()> {
     if !setup_mode {
         let cfg = config.as_ref().expect("normal mode has a configuration");
         let base_port = cfg.tcp_port.unwrap_or(DEFAULT_TCP_PORT);
-        #[cfg(not(feature = "board-xiao-s3"))]
+        #[cfg(not(board_xiao))]
         {
             let baud = cfg.baud_rate.unwrap_or(DEFAULT_BAUD);
             let forced = cfg
@@ -246,7 +264,7 @@ fn main() -> Result<()> {
         }
 
         // The UART to the target, bridged like another interface.
-        #[cfg(any(feature = "board-adapter", feature = "board-xiao-s3"))]
+        #[cfg(any(feature = "board-adapter", board_xiao))]
         {
             let port = base_port + UART_HEADER_INTERFACE;
             let serial = uart_header
@@ -255,7 +273,7 @@ fn main() -> Result<()> {
             let node = platform.node().expect("node started in normal mode");
             platform::spawn_thread(
                 "bridge-uart",
-                8 * 1024,
+                platform::small_ram(8 * 1024, 4 * 1024),
                 true,
                 Box::new(move || {
                     if let Err(e) = bridge::run(node, serial, port) {
@@ -275,7 +293,7 @@ fn main() -> Result<()> {
         let p = platform.clone();
         std::thread::Builder::new()
             .name("shell-usb".into())
-            .stack_size(12 * 1024)
+            .stack_size(platform::small_ram(12 * 1024, 5 * 1024))
             .spawn(move || {
                 while !cdc.terminal_open() {
                     std::thread::sleep(Duration::from_millis(100));
@@ -286,7 +304,10 @@ fn main() -> Result<()> {
             })?;
     }
 
-    // Shell on UART0 (always). Quiet: prompt appears after Enter.
+    // Shell on UART0. Quiet: prompt appears after Enter. Not on the XIAO
+    // ESP32C3, whose RAM has no room for a second shell (its USB port has
+    // one in both modes).
+    #[cfg(not(feature = "board-xiao-c3"))]
     {
         let p = platform.clone();
         std::thread::Builder::new()
@@ -299,51 +320,44 @@ fn main() -> Result<()> {
             })?;
     }
 
-    spawn_supervisor(platform.clone());
-
     if setup_mode {
         info!("setup: open the USB serial port (or press Enter on UART0) to configure");
     }
-    loop {
-        std::thread::sleep(Duration::from_secs(60));
-    }
+    supervise(platform)
 }
 
 /// Periodic status log, subscribed to the Task Watchdog. Building the status
 /// takes the node, magicsock and DERP locks, so a deadlock or a stuck network
 /// thread stops this loop and the watchdog (60 s, panic and reboot) fires.
-fn spawn_supervisor(platform: Arc<platform::EspPlatform>) {
-    let _ = std::thread::Builder::new()
-        .name("supervisor".into())
-        .stack_size(8 * 1024)
-        .spawn(move || {
-            unsafe {
-                esp_idf_svc::sys::esp_task_wdt_add(core::ptr::null_mut());
-            }
-            let mut tick = 0u32;
-            loop {
-                std::thread::sleep(Duration::from_secs(5));
-                let s = platform.status();
-                unsafe {
-                    esp_idf_svc::sys::esp_task_wdt_reset();
+/// Runs in the main task, which has nothing else to do by then: a thread of
+/// its own would cost a stack.
+fn supervise(platform: Arc<platform::EspPlatform>) -> ! {
+    unsafe {
+        esp_idf_svc::sys::esp_task_wdt_add(core::ptr::null_mut());
+    }
+    let mut tick = 0u32;
+    loop {
+        std::thread::sleep(Duration::from_secs(5));
+        let s = platform.status();
+        unsafe {
+            esp_idf_svc::sys::esp_task_wdt_reset();
+        }
+        tick += 1;
+        if tick % 6 == 0 {
+            info!(
+                "status: wifi={} node={:?} derp={} peers={} usb={} heap={}{}",
+                s.wifi,
+                s.node,
+                s.derp,
+                s.peers,
+                s.usb,
+                s.heap,
+                if s.board.is_empty() {
+                    String::new()
+                } else {
+                    format!(" board={}", s.board)
                 }
-                tick += 1;
-                if tick % 6 == 0 {
-                    info!(
-                        "status: wifi={} node={:?} derp={} peers={} usb={} heap={}{}",
-                        s.wifi,
-                        s.node,
-                        s.derp,
-                        s.peers,
-                        s.usb,
-                        s.heap,
-                        if s.board.is_empty() {
-                            String::new()
-                        } else {
-                            format!(" board={}", s.board)
-                        }
-                    );
-                }
-            }
-        });
+            );
+        }
+    }
 }

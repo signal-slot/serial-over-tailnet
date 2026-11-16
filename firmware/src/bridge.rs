@@ -17,7 +17,8 @@
 //! The channel is anything that implements [`Serial`]: an interface of the
 //! USB device, or the adapter board's UART header (`uart_link`).
 
-use crate::usb_host::{OpenError, UsbSerial};
+#[cfg(not(board_xiao))]
+use crate::usb_host::UsbSerial;
 use adapter_core::rfc2217::{Command, Purge, Session};
 use adapter_core::usbserial::LineSettings;
 use anyhow::{anyhow, Result};
@@ -28,6 +29,28 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tsnode::netstack::TcpStream;
 use tsnode::node::Node;
+
+/// Why a channel could not be opened for a client.
+#[derive(Debug)]
+pub enum OpenError {
+    /// Nothing is attached (or the device has no such interface); the
+    /// channel opens by itself once a device with the interface arrives.
+    /// Never for a UART, which is always there.
+    #[cfg_attr(board_xiao, allow(dead_code))]
+    NoDevice,
+    /// The interface is there but cannot be opened now, most often because
+    /// the host controller has no free pipe.
+    Failed(String),
+}
+
+impl std::fmt::Display for OpenError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            OpenError::NoDevice => write!(f, "no device attached"),
+            OpenError::Failed(e) => write!(f, "{e}"),
+        }
+    }
+}
 
 /// A serial channel a bridge can serve. The methods are those of
 /// [`UsbSerial`]; see there for what each does.
@@ -46,6 +69,7 @@ pub trait Serial: Clone + Send + Sync + 'static {
     fn write(&self, data: &[u8]) -> Result<()>;
 }
 
+#[cfg(not(board_xiao))]
 impl Serial for UsbSerial {
     fn open(&self) -> std::result::Result<(), OpenError> {
         UsbSerial::open(self)
@@ -87,7 +111,7 @@ pub fn run<S: Serial>(node: Node, serial: S, port: u16) -> Result<()> {
     let (tx, rx) = mpsc::sync_channel::<TcpStream>(1);
     crate::platform::spawn_thread(
         &format!("bridge-accept{port}"),
-        6 * 1024,
+        crate::platform::small_ram(6 * 1024, 3 * 1024),
         true,
         Box::new(move || loop {
             let Some(conn) = listener.accept(Duration::from_secs(1)) else {
@@ -104,17 +128,74 @@ pub fn run<S: Serial>(node: Node, serial: S, port: u16) -> Result<()> {
             }
         }),
     )?;
+    // Serial -> TCP, one thread for every session: a thread made and ended
+    // per session leaked about 160 bytes each time (Rust's threads on
+    // ESP-IDF; plain pthreads do not), which ran an ESP32-C3 out of memory
+    // after some 150 connections.
+    //
+    // The session is handed over in a slot the thread looks at, and the end
+    // is an atomic flag the session polls. Handing it over through a channel
+    // (each side parked until the other wakes it) corrupted this thread's
+    // stack on the ESP32-S3 every few hundred sessions: a pointer on it read
+    // back as null.
+    let slot: Arc<Mutex<Option<RxJob>>> = Arc::new(Mutex::new(None));
+    let slot2 = slot.clone();
+    let serial2 = serial.clone();
+    crate::platform::spawn_thread(
+        &format!("bridge-rx{port}"),
+        crate::platform::small_ram(6 * 1024, 4 * 1024),
+        true,
+        Box::new(move || loop {
+            let job = slot2.lock().unwrap().take();
+            match job {
+                Some(job) => {
+                    serial_to_client(&serial2, &job);
+                    job.done.store(true, Ordering::Release);
+                }
+                None => std::thread::sleep(Duration::from_millis(20)),
+            }
+        }),
+    )?;
     loop {
         let conn = rx
             .recv()
             .map_err(|_| anyhow!("bridge: accept thread exited"))?;
-        serve(&serial, conn, port)?;
+        serve(&serial, conn, port, &slot);
         busy.store(false, Ordering::SeqCst);
     }
 }
 
+/// One session's work for the serial-to-TCP thread.
+struct RxJob {
+    conn: Arc<TcpStream>,
+    session: Arc<Mutex<Session>>,
+    stop: Arc<AtomicBool>,
+    /// Set when the thread is done with the session.
+    done: Arc<AtomicBool>,
+}
+
+/// Sends what the target writes to the client until the session stops or
+/// the client is gone.
+fn serial_to_client<S: Serial>(serial: &S, job: &RxJob) {
+    let mut buf = [0u8; 512];
+    let mut out = Vec::with_capacity(2 * buf.len());
+    while !job.stop.load(Ordering::Relaxed) {
+        let n = serial.read(&mut buf, Duration::from_millis(100));
+        if n > 0 {
+            out.clear();
+            job.session.lock().unwrap().encode(&buf[..n], &mut out);
+            if job.conn.write_all(&out).is_err() {
+                break;
+            }
+        }
+        if job.conn.is_closed() {
+            break;
+        }
+    }
+}
+
 /// Runs one client session until either side closes.
-fn serve<S: Serial>(serial: &S, conn: TcpStream, port: u16) -> Result<()> {
+fn serve<S: Serial>(serial: &S, conn: TcpStream, port: u16, rx_slot: &Mutex<Option<RxJob>>) {
     let peer = conn.peer_addr();
     info!("bridge: client connected from {peer} on {port}");
     match serial.open() {
@@ -124,7 +205,7 @@ fn serve<S: Serial>(serial: &S, conn: TcpStream, port: u16) -> Result<()> {
             warn!("bridge: rejecting {peer} on {port}: {e}");
             let _ = conn.write_all(format!("serial: cannot open the channel: {e}\r\n").as_bytes());
             conn.close();
-            return Ok(());
+            return;
         }
     }
     let conn = Arc::new(conn);
@@ -134,37 +215,14 @@ fn serve<S: Serial>(serial: &S, conn: TcpStream, port: u16) -> Result<()> {
         serial.line(),
         &format!("serial-over-tailnet {}", crate::FIRMWARE_VERSION),
     )));
-    let serial2 = serial.clone();
-    let c2 = conn.clone();
-    let session2 = session.clone();
     let stop = Arc::new(AtomicBool::new(false));
-    let stop2 = stop.clone();
-    // Serial -> TCP
-    let rx_done = Arc::new(AtomicBool::new(false));
-    let rx_done2 = rx_done.clone();
-    crate::platform::spawn_thread(
-        &format!("bridge-rx{port}"),
-        6 * 1024,
-        true,
-        Box::new(move || {
-            let mut buf = [0u8; 512];
-            let mut out = Vec::with_capacity(2 * buf.len());
-            while !stop2.load(Ordering::Relaxed) {
-                let n = serial2.read(&mut buf, Duration::from_millis(100));
-                if n > 0 {
-                    out.clear();
-                    session2.lock().unwrap().encode(&buf[..n], &mut out);
-                    if c2.write_all(&out).is_err() {
-                        break;
-                    }
-                }
-                if c2.is_closed() {
-                    break;
-                }
-            }
-            rx_done2.store(true, Ordering::Relaxed);
-        }),
-    )?;
+    let done = Arc::new(AtomicBool::new(false));
+    *rx_slot.lock().unwrap() = Some(RxJob {
+        conn: conn.clone(),
+        session: session.clone(),
+        stop: stop.clone(),
+        done: done.clone(),
+    });
     // TCP -> Serial
     let mut buf = [0u8; 512];
     let mut to_serial = Vec::with_capacity(buf.len());
@@ -214,13 +272,15 @@ fn serve<S: Serial>(serial: &S, conn: TcpStream, port: u16) -> Result<()> {
         }
     }
     stop.store(true, Ordering::Relaxed);
-    while !rx_done.load(Ordering::Relaxed) {
-        std::thread::sleep(Duration::from_millis(20));
+    // The thread may not have taken the job yet; then it is taken back.
+    if rx_slot.lock().unwrap().take().is_none() {
+        while !done.load(Ordering::Acquire) {
+            std::thread::sleep(Duration::from_millis(10));
+        }
     }
     conn.close();
     serial.close();
     info!("bridge: client {peer} on {port} disconnected");
-    Ok(())
 }
 
 /// Applies one RFC 2217 request to the serial port; `false` when the port

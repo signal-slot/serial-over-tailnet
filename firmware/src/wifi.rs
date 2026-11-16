@@ -186,7 +186,8 @@ impl WifiManager {
             return Err(anyhow::anyhow!("no known networks"));
         }
         let mut aps = self.scan()?;
-        aps.sort_by_key(|a| -(a.rssi as i32));
+        // Unstable: a stable sort of more than 20 items reserves 4 KB of stack.
+        aps.sort_unstable_by_key(|a| -(a.rssi as i32));
         let Some(best) = aps.iter().find_map(|a| {
             known
                 .iter()

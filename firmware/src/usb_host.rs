@@ -237,25 +237,7 @@ struct DeviceId {
     pid: u16,
 }
 
-/// Why a channel could not be opened for a client.
-#[derive(Debug)]
-pub enum OpenError {
-    /// Nothing is attached (or the device has no such interface); the
-    /// channel opens by itself once a device with the interface arrives.
-    NoDevice,
-    /// The interface is there but cannot be opened now, most often because
-    /// the host controller has no free pipe.
-    Failed(String),
-}
-
-impl std::fmt::Display for OpenError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            OpenError::NoDevice => write!(f, "no device attached"),
-            OpenError::Failed(e) => write!(f, "{e}"),
-        }
-    }
-}
+pub use crate::bridge::OpenError;
 
 /// Called once per newly created channel with its interface, its port and
 /// the channel; the firmware starts a bridge on it.

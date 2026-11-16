@@ -11,8 +11,7 @@
 //! There are no modem lines on the header: DTR and RTS requests are accepted
 //! and do nothing. A break is made by inverting TX while it lasts.
 
-use crate::bridge::Serial;
-use crate::usb_host::OpenError;
+use crate::bridge::{OpenError, Serial};
 use adapter_core::usbserial::{LineSettings, Parity, StopBits};
 use anyhow::{anyhow, Result};
 use esp_idf_svc::hal::delay::TickType;
@@ -45,8 +44,8 @@ impl UartSerial {
     ) -> Result<UartSerial> {
         let cfg = config::Config::default()
             .baudrate(Hertz(baud))
-            .rx_fifo_size(2048)
-            .tx_fifo_size(1024);
+            .rx_fifo_size(crate::platform::small_ram(2048, 1024))
+            .tx_fifo_size(crate::platform::small_ram(1024, 512));
         let uart = UartDriver::new(
             uart1,
             tx,

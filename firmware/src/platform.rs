@@ -3,11 +3,14 @@
 
 use crate::nvs_store::{self, NvsStore};
 use crate::tls::EspDialer;
+#[cfg(not(board_xiao))]
 use crate::usb_host::UsbHost;
 use crate::wifi::WifiManager;
 use adapter_core::shell::{ApInfo, NodeState, Platform, SavedConfig, StatusSnapshot};
 use esp_idf_svc::sys;
-use std::sync::{Arc, Mutex, OnceLock};
+#[cfg(not(board_xiao))]
+use std::sync::OnceLock;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tsnode::net::Spawner;
 use tsnode::node::{Node, NodeConfig, NodeState as TsState};
@@ -17,6 +20,7 @@ pub struct EspPlatform {
     pub wifi: Arc<WifiManager>,
     pub node: Mutex<Option<Node>>,
     /// The USB host, set once it is started (normal mode only).
+    #[cfg(not(board_xiao))]
     pub usb: OnceLock<UsbHost>,
     pub setup_mode: bool,
     pub board: crate::board::Board,
@@ -40,8 +44,13 @@ impl EspPlatform {
             version: crate::FIRMWARE_VERSION.into(),
             udp_port: 41641,
             local_ip: None,
-            worker_stack: 20 * 1024,
-            control_stack: 40 * 1024,
+            // Without PSRAM (the ESP32-C3) the stacks come out of the
+            // internal RAM, which has no room for the usual sizes.
+            // The worker threads seal disco messages (X25519) and run
+            // WireGuard from inside lwIP sends; 6 KB overflowed on the
+            // ESP32-C3 (seen with heap tracing, which adds to every call).
+            worker_stack: small_ram(20 * 1024, 8 * 1024),
+            control_stack: small_ram(40 * 1024, 16 * 1024),
             fallback_region_code: "tok".into(),
             spawner: Some(spawner()),
         }
@@ -111,11 +120,11 @@ impl Platform for EspPlatform {
             node: Some(self.node_state()),
             derp,
             peers,
+            #[cfg(board_xiao)]
+            usb: "console (this board has no USB host)".into(),
+            #[cfg(not(board_xiao))]
             usb: match self.usb.get() {
                 Some(h) => format!("{} ({})", h.describe(), crate::usb_host::root_port_state()),
-                None if cfg!(feature = "board-xiao-s3") => {
-                    "console (this board has no USB host)".into()
-                }
                 None if self.setup_mode => "device mode (setup console)".into(),
                 None => "starting".into(),
             },
@@ -285,10 +294,30 @@ pub fn last_reset() -> ResetReason {
 /// Thread spawner that puts the stacks of network worker threads in PSRAM.
 /// Threads that may write flash (NVS) must keep internal-RAM stacks because
 /// the flash cache is disabled during writes; only the control thread does.
+///
+/// On a chip without PSRAM the node's worker stacks are small, and a DERP
+/// thread, which runs a TLS connection, gets more than the others.
 pub fn spawner() -> Spawner {
     Arc::new(|name: &str, stack: usize, f: Box<dyn FnOnce() + Send>| {
+        let stack = if name.starts_with("derp-") {
+            stack.max(small_ram(0, 8 * 1024))
+        } else {
+            stack
+        };
         spawn_thread(name, stack, name != "control", f)
     })
+}
+
+/// `normal`, or `small` on a board without PSRAM (the XIAO ESP32C3), where
+/// every stack and buffer comes out of the 300 KB or so of internal RAM. The
+/// small stacks leave a few kilobytes above the most each thread was seen to
+/// use.
+pub const fn small_ram(normal: usize, small: usize) -> usize {
+    if cfg!(feature = "board-xiao-c3") {
+        small
+    } else {
+        normal
+    }
 }
 
 pub fn spawn_thread(
@@ -301,7 +330,8 @@ pub fn spawn_thread(
     let cfg = ThreadSpawnConfiguration {
         stack_size: stack,
         inherit: false,
-        stack_alloc_caps: if psram {
+        // A chip without PSRAM (the ESP32-C3) has only internal RAM.
+        stack_alloc_caps: if psram && cfg!(not(feature = "board-xiao-c3")) {
             MallocCap::Spiram | MallocCap::Cap8bit
         } else {
             MallocCap::Internal | MallocCap::Cap8bit

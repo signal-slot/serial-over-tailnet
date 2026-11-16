@@ -24,9 +24,13 @@ default = []
 # USB-C ports) instead of the YD-ESP32-S3 development board.
 board-adapter = []
 # The Seeed Studio XIAO ESP32S3 (ESP32-S3R8, one USB-C port): no USB host;
-# a 3.3 V UART on D4 (TX) and D5 (RX) is bridged instead, and the USB port
+# a 3.3 V UART on D10 (TX) and D9 (RX) is bridged instead, and the USB port
 # stays the console. Build with variants/xiao-s3.defaults.
 board-xiao-s3 = []
+# The Seeed Studio XIAO ESP32C3 (ESP32-C3, 4 MB flash, no PSRAM), like the
+# XIAO ESP32S3: no USB host, a 3.3 V UART is bridged. Build for the target
+# riscv32imc-esp-espidf with MCU=esp32c3 and variants/xiao-c3.defaults.
+board-xiao-c3 = ["tsnode/small-ram"]
 
 [dependencies]
 esp-idf-svc = { version = "0.53", features = ["std", "alloc", "binstart", "critical-section"] }

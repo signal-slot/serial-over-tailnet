@@ -20,15 +20,18 @@
 
 #[cfg(feature = "board-adapter")]
 pub use adapter::{Board, Pins};
-#[cfg(not(any(feature = "board-adapter", feature = "board-xiao-s3")))]
+#[cfg(not(any(feature = "board-adapter", board_xiao)))]
 pub use devkit::Board;
-#[cfg(feature = "board-xiao-s3")]
+#[cfg(board_xiao)]
 pub use xiao::Board;
 
-#[cfg(all(feature = "board-adapter", feature = "board-xiao-s3"))]
-compile_error!("board-adapter and board-xiao-s3 are different boards: enable one");
+#[cfg(any(
+    all(feature = "board-adapter", board_xiao),
+    all(feature = "board-xiao-s3", feature = "board-xiao-c3")
+))]
+compile_error!("board-adapter, board-xiao-s3 and board-xiao-c3 are different boards: enable one");
 
-#[cfg(feature = "board-xiao-s3")]
+#[cfg(board_xiao)]
 mod xiao {
     pub struct Board;
 
@@ -38,12 +41,16 @@ mod xiao {
         }
 
         pub fn describe(&self) -> String {
-            "XIAO ESP32S3: UART on D10 (TX) and D9 (RX), 3.3 V".into()
+            if cfg!(feature = "board-xiao-c3") {
+                "XIAO ESP32C3: UART on D4 (TX) and D5 (RX), 3.3 V".into()
+            } else {
+                "XIAO ESP32S3: UART on D10 (TX) and D9 (RX), 3.3 V".into()
+            }
         }
     }
 }
 
-#[cfg(not(any(feature = "board-adapter", feature = "board-xiao-s3")))]
+#[cfg(not(any(feature = "board-adapter", board_xiao)))]
 mod devkit {
     pub struct Board;
 

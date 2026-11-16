@@ -1,7 +1,7 @@
-//! BOOT button (GPIO0, active low) used to request Setup Mode.
+//! BOOT button (GPIO0 on the ESP32-S3, GPIO9 on the ESP32-C3; active low) used to request Setup Mode.
 
 use anyhow::Result;
-use esp_idf_svc::hal::gpio::{Gpio0, Input, PinDriver, Pull};
+use esp_idf_svc::hal::gpio::{Input, InputPin, PinDriver, Pull};
 use std::time::{Duration, Instant};
 
 pub struct Button {
@@ -9,8 +9,8 @@ pub struct Button {
 }
 
 impl Button {
-    pub fn new(gpio0: Gpio0<'static>) -> Result<Self> {
-        let pin = PinDriver::input(gpio0, Pull::Up)?;
+    pub fn new(pin: impl InputPin + 'static) -> Result<Self> {
+        let pin = PinDriver::input(pin, Pull::Up)?;
         Ok(Button { pin })
     }
 

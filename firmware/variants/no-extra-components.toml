@@ -1,0 +1,3 @@
+# No extra ESP-IDF components: for a chip without a USB host (the ESP32-C3),
+# where espressif/usb_host_cdc_acm does not exist. Pass this file in
+# ESP_IDF_SYS_EXTRA_COMPONENTS_FILE; it replaces the list in Cargo.toml.

@@ -4,18 +4,21 @@
 use adapter_core::shell::Console;
 use anyhow::Result;
 use esp_idf_svc::hal::delay::TickType;
-use esp_idf_svc::hal::gpio::{Gpio19, Gpio20};
 use esp_idf_svc::hal::uart::UartDriver;
-use esp_idf_svc::hal::usb_serial::{config::Config, UsbSerialDriver, USB_SERIAL};
+use esp_idf_svc::hal::usb_serial::{
+    config::Config, UsbDMinGpio, UsbDPlusGpio, UsbSerialDriver, USB_SERIAL,
+};
 use log::info;
 use std::time::Duration;
 
 /// UART0 through the UART driver (logs keep using the VFS console path on
 /// the same pins; interleaving is acceptable for a debug port).
+#[cfg_attr(feature = "board-xiao-c3", allow(dead_code))]
 pub struct UartConsole {
     drv: UartDriver<'static>,
 }
 
+#[cfg_attr(feature = "board-xiao-c3", allow(dead_code))]
 impl UartConsole {
     pub fn new(drv: UartDriver<'static>) -> Self {
         UartConsole { drv }
@@ -45,14 +48,16 @@ pub struct UsbSerialConsole {
 impl UsbSerialConsole {
     pub fn install(
         usb_serial: USB_SERIAL<'static>,
-        d_minus: Gpio19<'static>,
-        d_plus: Gpio20<'static>,
+        d_minus: UsbDMinGpio<'static>,
+        d_plus: UsbDPlusGpio<'static>,
     ) -> Result<Self> {
         let mut drv = UsbSerialDriver::new(
             usb_serial,
             d_minus,
             d_plus,
-            &Config::new().rx_buffer_size(1024).tx_buffer_size(2048),
+            &Config::new()
+                .rx_buffer_size(crate::platform::small_ram(1024, 512))
+                .tx_buffer_size(crate::platform::small_ram(2048, 1024)),
         )?;
         // Discard anything left in the receive path from the ROM bootloader.
         let mut junk = [0u8; 64];
