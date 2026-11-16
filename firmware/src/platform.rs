@@ -328,6 +328,7 @@ pub fn spawn_thread(
 ) -> std::io::Result<()> {
     use esp_idf_svc::hal::task::thread::{MallocCap, ThreadSpawnConfiguration};
     let cfg = ThreadSpawnConfiguration {
+        name: Some(task_name(name)),
         stack_size: stack,
         inherit: false,
         // A chip without PSRAM (the ESP32-C3) has only internal RAM.
@@ -347,4 +348,31 @@ pub fn spawn_thread(
         .map(|_| ());
     let _ = ThreadSpawnConfiguration::default().set();
     r
+}
+
+/// The FreeRTOS task name for a thread, so that a stack overflow or a
+/// watchdog report names it (they all read "pthread" otherwise). Task names
+/// are static and at most 15 characters, so threads with numbered names
+/// (`derp-7`, `bridge-rx35930`) share one.
+fn task_name(name: &str) -> &'static core::ffi::CStr {
+    const NAMES: &[(&str, &core::ffi::CStr)] = &[
+        ("control", c"control"),
+        ("derp-", c"derp"),
+        ("magicsock-udp", c"magicsock-udp"),
+        ("magicsock-tick", c"magicsock-tick"),
+        ("netstack", c"netstack"),
+        ("bridge-accept", c"bridge-accept"),
+        ("bridge-rx", c"bridge-rx"),
+        ("bridge-uart", c"bridge-uart"),
+        ("bridge", c"bridge"),
+        ("authkey-scrub", c"authkey-scrub"),
+        ("shell-usb", c"shell-usb"),
+        ("shell-uart", c"shell-uart"),
+        ("wifi-connect", c"wifi-connect"),
+        ("wifi", c"wifi"),
+    ];
+    NAMES
+        .iter()
+        .find(|(prefix, _)| name.starts_with(prefix))
+        .map_or(c"pthread", |&(_, n)| n)
 }

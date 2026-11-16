@@ -174,14 +174,16 @@ fn main() -> Result<()> {
         // Bring Wi-Fi up in the background; the shell can still reconfigure it.
         wifi.set_networks(cfg.networks.clone());
         let w = wifi.clone();
-        std::thread::Builder::new()
-            .name("wifi-connect".into())
-            .stack_size(6 * 1024)
-            .spawn(move || {
+        platform::spawn_thread(
+            "wifi-connect",
+            6 * 1024,
+            false,
+            Box::new(move || {
                 if let Err(e) = w.connect_best(Duration::from_secs(30)) {
                     warn!("wifi: {e}");
                 }
-            })?;
+            }),
+        )?;
         if !setup_mode {
             platform
                 .start_node()
@@ -292,17 +294,19 @@ fn main() -> Result<()> {
     // until a key is pressed.
     if let Some(mut cdc) = cdc {
         let p = platform.clone();
-        std::thread::Builder::new()
-            .name("shell-usb".into())
-            .stack_size(platform::small_ram(12 * 1024, 5 * 1024))
-            .spawn(move || {
+        platform::spawn_thread(
+            "shell-usb",
+            platform::small_ram(12 * 1024, 8 * 1024),
+            false,
+            Box::new(move || {
                 while !cdc.terminal_open() {
                     std::thread::sleep(Duration::from_millis(100));
                 }
                 std::thread::sleep(Duration::from_millis(300));
                 let mut sh = Shell::new(&mut cdc, p.as_ref());
                 sh.run(setup_mode, !setup_mode);
-            })?;
+            }),
+        )?;
     }
 
     // Shell on UART0. Quiet: prompt appears after Enter. Not on the XIAO
@@ -311,14 +315,16 @@ fn main() -> Result<()> {
     #[cfg(not(feature = "board-xiao-c3"))]
     {
         let p = platform.clone();
-        std::thread::Builder::new()
-            .name("shell-uart".into())
-            .stack_size(12 * 1024)
-            .spawn(move || {
+        platform::spawn_thread(
+            "shell-uart",
+            12 * 1024,
+            false,
+            Box::new(move || {
                 let mut con = console::UartConsole::new(uart);
                 let mut sh = Shell::new(&mut con, p.as_ref());
                 sh.run(false, true);
-            })?;
+            }),
+        )?;
     }
 
     if setup_mode {
