@@ -201,11 +201,12 @@ fn main() -> Result<()> {
     // one 4-pin socket there carries the whole link.
     #[cfg(feature = "board-xiao-s3")]
     let (uart_tx, uart_rx) = (peripherals.pins.gpio9, peripherals.pins.gpio8);
-    // On the XIAO ESP32C3, D9 is GPIO9, the boot-mode pin: a target's TX on
-    // it (or an unpowered target) could hold it low at reset. D4 (GPIO6) and
-    // D5 (GPIO7) have no such role.
+    // The XIAO ESP32C3 keeps TX on D10 (GPIO10) but takes RX on D8 (GPIO8),
+    // one pin further: its D9 is GPIO9, which the BOOT button pulls to
+    // ground (and which selects download mode if low at reset). GPIO8 is a
+    // strapping pin too, but only matters when GPIO9 is low.
     #[cfg(feature = "board-xiao-c3")]
-    let (uart_tx, uart_rx) = (peripherals.pins.gpio6, peripherals.pins.gpio7);
+    let (uart_tx, uart_rx) = (peripherals.pins.gpio10, peripherals.pins.gpio8);
     #[cfg(any(feature = "board-adapter", board_xiao))]
     let mut uart_header = Some(
         uart_link::UartSerial::new(

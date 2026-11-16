@@ -23,7 +23,7 @@ Working end to end:
 - Wi-Fi setup through the wizard and joining a tailnet with the approval URL.
 - `tailscale ping` from another node, both via DERP and over a direct path.
 - With a XIAO ESP32S3: the console of a Raspberry Pi 5 over its 3.3 V UART (the 3-pin debug connector).
-- With a XIAO ESP32C3 (no PSRAM): joining a tailnet of 50 peers, its DERP connection, 300 bridge connections in a row with memory steady, and its UART in a loopback (D4 wired to D5) over the tailnet.
+- With a XIAO ESP32C3 (no PSRAM): joining a tailnet of 50 peers, its DERP connection, 300 bridge connections in a row with memory steady, and its UART in a loopback (D10 wired to D8) over the tailnet.
 - With a YD-ESP32-S3: console access to a Raspberry Pi Debug Probe (CDC-ACM) and a Toradex Dahlia (FT4232H) over USB.
 - RFC 2217 sessions against both USB targets: baud rate and framing changes, DTR and RTS, break and purge from pyserial.
 - On the FT4232H, three ports claimed at once and a client on the fourth port refused.
@@ -142,16 +142,17 @@ The [XIAO ESP32C3](https://wiki.seeedstudio.com/XIAO_ESP32C3_Getting_Started/) h
 | XIAO pin | Role | Connect to |
 | --- | --- | --- |
 | `GND` | ground | the target's GND |
-| `D4` | TX (out of the XIAO) | the target's RX |
-| `D5` | RX (into the XIAO) | the target's TX |
+| `D10` | TX (out of the XIAO) | the target's RX |
+| `D9` | not used | leave unconnected |
+| `D8` | RX (into the XIAO) | the target's TX |
 
-`D4` and `D5` are the 5th and 6th pins from the USB-C end on the side with D0 to D6; `GND` is the 2nd pin on the other side.
-They are not the S3's D10 and D9: on the ESP32-C3, D9 is GPIO9, the pin that selects the boot mode, and a target's TX (or an unpowered target) could hold it low at reset.
-The carrier board does not fit it for the same reason.
+The pins are on the same side as on the S3 (from the USB-C end: 5V, GND, 3V3, D10, D9, D8, D7); a 5-pin socket from GND to D8 covers them.
+RX is on D8 instead of D9 because the C3's D9 is GPIO9: the BOOT button pulls it to ground, and the chip starts in download mode if it is low at reset.
+The carrier board connects D9, so it does not fit the C3.
 
 Its ESP32-C3 has no PSRAM, so the firmware keeps less: only a few endpoints per peer, a peer's WireGuard state only once the peer talks to it, and a TCP window of 2 KB on the tailnet.
-It has joined a tailnet of 49 peers with about 50 KB of RAM to spare; a much larger tailnet may not fit.
-The UART has not been tried against a target yet.
+It has joined a tailnet of 50 peers with about 40 KB of RAM to spare; a much larger tailnet may not fit.
+Its UART has been tried in a loopback, not yet against a target.
 In Japan the board is sold with 技適: construction design certification number 204-B00704, as [Akizuki Denshi lists it](https://akizukidenshi.com/catalog/g/g117454/).
 
 #### YD-ESP32-S3

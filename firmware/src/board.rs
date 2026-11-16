@@ -42,7 +42,7 @@ mod xiao {
 
         pub fn describe(&self) -> String {
             if cfg!(feature = "board-xiao-c3") {
-                "XIAO ESP32C3: UART on D4 (TX) and D5 (RX), 3.3 V".into()
+                "XIAO ESP32C3: UART on D10 (TX) and D8 (RX), 3.3 V".into()
             } else {
                 "XIAO ESP32S3: UART on D10 (TX) and D9 (RX), 3.3 V".into()
             }

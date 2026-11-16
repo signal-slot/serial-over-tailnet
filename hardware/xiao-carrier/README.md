@@ -1,7 +1,7 @@
 # XIAO carrier
 
 A small board that a Seeed Studio XIAO ESP32S3 sits on.
-A XIAO ESP32C3 has the same outline, but the firmware does not support it, and its D9 is the boot-mode pin, which a target's TX would hold.
+A XIAO ESP32C3 has the same outline but does not fit: this board takes RX on D9, and on the C3 the firmware takes it on D8, because the C3's D9 is the BOOT button's pin.
 Past the XIAO's end opposite the USB-C connector it has a 4-pin right-angle header with a UART at the target's voltage.
 
 **Not made yet.** Nothing here has been tested on hardware.
