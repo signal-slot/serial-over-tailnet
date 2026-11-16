@@ -2,7 +2,7 @@
 //! `discokey:`, `privkey:`).
 
 use crate::crypto::{x25519_generate, x25519_public};
-use std::fmt;
+use core::fmt;
 
 pub const MACHINE_PUB_PREFIX: &str = "mkey:";
 pub const NODE_PUB_PREFIX: &str = "nodekey:";

@@ -7,7 +7,7 @@ use crate::crypto::{
 };
 use crate::keys::KeyPair;
 use crate::noise::SymmetricState;
-use std::sync::atomic::{AtomicI32, Ordering};
+use core::sync::atomic::{AtomicI32, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 pub const CONSTRUCTION: &[u8] = b"Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s";
@@ -52,7 +52,7 @@ impl core::fmt::Display for WgError {
         write!(f, "{self:?}")
     }
 }
-impl std::error::Error for WgError {}
+impl core::error::Error for WgError {}
 
 fn tai64n_now() -> [u8; 12] {
     let now = SystemTime::now()
@@ -426,7 +426,7 @@ impl Tunn {
     }
 
     fn flush_queue(&mut self, now: Instant) -> Vec<Vec<u8>> {
-        let queued = std::mem::take(&mut self.queued);
+        let queued = core::mem::take(&mut self.queued);
         let mut out = Vec::with_capacity(queued.len());
         if let Some(s) = self.current.as_mut() {
             for pkt in queued {

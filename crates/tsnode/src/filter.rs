@@ -7,7 +7,7 @@
 //! passed on for the stack to match against its sockets.
 
 use crate::types::FilterRule;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 
 const PROTO_ICMP: u8 = 1;
 const PROTO_TCP: u8 = 6;

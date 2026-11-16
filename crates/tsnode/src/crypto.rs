@@ -20,7 +20,7 @@ impl core::fmt::Display for CryptoError {
         f.write_str("authentication failed")
     }
 }
-impl std::error::Error for CryptoError {}
+impl core::error::Error for CryptoError {}
 
 /// Fill `buf` with cryptographically secure random bytes.
 pub fn random_bytes(buf: &mut [u8]) {

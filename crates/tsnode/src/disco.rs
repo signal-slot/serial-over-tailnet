@@ -2,7 +2,7 @@
 //! sealed with NaCl box between disco keys.
 
 use crate::crypto::{nacl_box_open, nacl_box_seal, random_array, CryptoError};
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 /// 6-byte magic: "TS💬".
 pub const MAGIC: &[u8; 6] = b"TS\xf0\x9f\x92\xac";

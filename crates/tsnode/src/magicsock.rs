@@ -9,8 +9,8 @@ use crate::net::Dialer;
 use crate::stun;
 use crate::types::{DerpMap, DerpNode, Node, PeerChange};
 use crate::wireguard::{self, Tunn};
+use alloc::collections::BTreeMap;
 use log::{debug, info, trace, warn};
-use std::collections::HashMap;
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
@@ -97,12 +97,12 @@ struct State {
     /// Boxed, so that the table is a small block of keys and pointers
     /// rather than one block of every peer's state (tens of kilobytes on a
     /// tailnet of 50, more than a device without PSRAM has in one piece).
-    peers: HashMap<[u8; 32], Box<Peer>>,
-    by_index: HashMap<u32, [u8; 32]>,
+    peers: BTreeMap<[u8; 32], Box<Peer>>,
+    by_index: BTreeMap<u32, [u8; 32]>,
     filter: Option<crate::filter::Filter>,
     derp_map: DerpMap,
-    stun_pending: HashMap<TxId, (i32, Instant)>,
-    stun_latency: HashMap<i32, Duration>,
+    stun_pending: BTreeMap<TxId, (i32, Instant)>,
+    stun_latency: BTreeMap<i32, Duration>,
     mapped_addr: Option<SocketAddr>,
     last_stun: Option<Instant>,
     local_ip: Option<IpAddr>,
@@ -126,7 +126,7 @@ struct Inner {
     udp: UdpSocket,
     udp_port: u16,
     state: Mutex<State>,
-    derps: Mutex<HashMap<i32, DerpHandle>>,
+    derps: Mutex<BTreeMap<i32, DerpHandle>>,
     ip_sink: Mutex<Option<IpSink>>,
     dialer: Arc<dyn Dialer>,
     shutdown: AtomicBool,
@@ -181,17 +181,17 @@ impl MagicSock {
             udp,
             udp_port: bound_port,
             state: Mutex::new(State {
-                peers: HashMap::new(),
-                by_index: HashMap::new(),
+                peers: BTreeMap::new(),
+                by_index: BTreeMap::new(),
                 filter: None,
                 derp_map: DerpMap::default(),
-                stun_pending: HashMap::new(),
-                stun_latency: HashMap::new(),
+                stun_pending: BTreeMap::new(),
+                stun_latency: BTreeMap::new(),
                 mapped_addr: None,
                 last_stun: None,
                 local_ip,
             }),
-            derps: Mutex::new(HashMap::new()),
+            derps: Mutex::new(BTreeMap::new()),
             ip_sink: Mutex::new(None),
             dialer,
             shutdown: AtomicBool::new(false),
@@ -257,7 +257,7 @@ impl MagicSock {
         v
     }
 
-    pub fn derp_latency(&self) -> HashMap<String, f64> {
+    pub fn derp_latency(&self) -> BTreeMap<String, f64> {
         let st = self.inner.state.lock().unwrap();
         st.stun_latency
             .iter()
@@ -305,9 +305,6 @@ impl MagicSock {
     pub fn set_peers(&self, nodes: Vec<Box<Node>>) {
         let mut st = self.inner.state.lock().unwrap();
         let mut old = std::mem::take(&mut st.peers);
-        // Sized once: a table that doubles as it fills needs its old and new
-        // blocks at the same time.
-        st.peers.reserve(nodes.len());
         st.by_index.clear();
         for n in nodes {
             let Some(key) = n.key else {
@@ -473,7 +470,7 @@ impl MagicSock {
 
     fn derp_send(&self, st: &mut State, region: i32, dst: [u8; 32], pkt: &[u8]) {
         let mut derps = self.inner.derps.lock().unwrap();
-        if let std::collections::hash_map::Entry::Vacant(e) = derps.entry(region) {
+        if let alloc::collections::btree_map::Entry::Vacant(e) = derps.entry(region) {
             match self.spawn_derp(st, region) {
                 Some(h) => {
                     e.insert(h);
@@ -521,7 +518,7 @@ impl MagicSock {
         self.inner.home_derp.store(region, Ordering::Relaxed);
         let st = self.inner.state.lock().unwrap();
         let mut derps = self.inner.derps.lock().unwrap();
-        if let std::collections::hash_map::Entry::Vacant(e) = derps.entry(region) {
+        if let alloc::collections::btree_map::Entry::Vacant(e) = derps.entry(region) {
             if let Some(h) = self.spawn_derp(&st, region) {
                 e.insert(h);
             }

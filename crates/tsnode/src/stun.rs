@@ -1,7 +1,7 @@
 //! Minimal STUN binding request/response (RFC 5389) for endpoint discovery.
 
 use crate::crypto::random_array;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 const MAGIC_COOKIE: [u8; 4] = [0x21, 0x12, 0xa4, 0x42];
 const ATTR_MAPPED_ADDRESS: u16 = 0x0001;

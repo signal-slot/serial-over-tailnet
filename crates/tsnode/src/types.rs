@@ -1,8 +1,8 @@
 //! JSON types exchanged with the Tailscale control plane (subset of `tailcfg`).
 
+use alloc::collections::BTreeMap;
+use core::net::{IpAddr, Ipv4Addr, SocketAddr};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 /// The capability version we claim. Kept deliberately conservative so the
 /// control server uses the well-understood, older response shapes.
@@ -20,8 +20,8 @@ pub struct NetInfo {
     #[serde(rename = "WorkingIPv6")]
     pub working_ipv6: Option<bool>,
     pub link_type: String,
-    #[serde(rename = "DERPLatency", skip_serializing_if = "HashMap::is_empty")]
-    pub derp_latency: HashMap<String, f64>,
+    #[serde(rename = "DERPLatency", skip_serializing_if = "BTreeMap::is_empty")]
+    pub derp_latency: BTreeMap<String, f64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -60,7 +60,7 @@ pub struct RegisterRequest {
     pub expiry: String,
     pub followup: String,
     pub hostinfo: Hostinfo,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "core::ops::Not::not")]
     pub ephemeral: bool,
 }
 
@@ -106,9 +106,9 @@ pub struct MapRequest {
     pub hostinfo: Hostinfo,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub endpoints: Vec<String>,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "core::ops::Not::not")]
     pub omit_peers: bool,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    #[serde(skip_serializing_if = "core::ops::Not::not")]
     pub read_only: bool,
 }
 
@@ -170,9 +170,9 @@ pub(crate) fn parse_cidr(s: &str) -> Option<(IpAddr, u8)> {
 /// `null` is taken as absent.
 mod de {
     use crate::keys::{parse_prefixed, DISCO_PUB_PREFIX, NODE_PUB_PREFIX};
+    use core::net::{IpAddr, Ipv4Addr, SocketAddr};
     use serde::de::{SeqAccess, Visitor};
     use serde::{Deserialize, Deserializer};
-    use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
     fn text<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
         Ok(Option::<String>::deserialize(d)?.unwrap_or_default())
@@ -209,7 +209,7 @@ mod de {
         struct Keep;
         impl<'de> Visitor<'de> for Keep {
             type Value = Vec<super::DerpNode>;
-            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+            fn expecting(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
                 f.write_str("a list of DERP nodes")
             }
             fn visit_unit<E>(self) -> Result<Self::Value, E> {
@@ -292,7 +292,7 @@ pub struct DerpRegion {
 #[serde(default, rename_all = "PascalCase")]
 pub struct DerpMap {
     /// By region ID.
-    pub regions: HashMap<i32, DerpRegion>,
+    pub regions: BTreeMap<i32, DerpRegion>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -358,7 +358,7 @@ pub struct MapResponse {
     pub packet_filter: Option<Vec<FilterRule>>,
     /// Named filter sets (capability version 81+): `*` is the base set, a
     /// `null` value deletes the named set.
-    pub packet_filters: Option<HashMap<String, Option<Vec<FilterRule>>>>,
+    pub packet_filters: Option<BTreeMap<String, Option<Vec<FilterRule>>>>,
     pub domain: String,
     pub health: Option<Vec<String>>,
     pub control_time: Option<String>,

@@ -16,10 +16,11 @@ serde_json = "1"
 base64 = "0.22"
 hex = "0.4"
 log = "0.4"
-hpack = "0.3"
 smoltcp = { version = "0.12", default-features = false, features = ["std", "log", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-tcp"] }
 
 [dev-dependencies]
+# Only to check that our HPACK decoder reads what another encoder writes.
+hpack = "0.3"
 env_logger = "0.11"
 
 [features]

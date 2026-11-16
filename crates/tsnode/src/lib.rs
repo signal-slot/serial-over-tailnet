@@ -7,6 +7,8 @@
 //! - [`netstack`]: smoltcp-based TCP termination on the node's tailnet addresses.
 //! - [`node`]: glue that runs everything on plain threads.
 
+extern crate alloc;
+
 pub mod control;
 pub mod controlbase;
 pub mod crypto;
@@ -14,6 +16,7 @@ pub mod derp;
 pub mod disco;
 pub mod filter;
 pub mod h2;
+pub mod hpack;
 pub mod http1;
 pub mod keys;
 pub mod magicsock;

@@ -2,8 +2,9 @@
 //! streams, no server push, no priorities. It is what the Tailscale control
 //! server speaks inside the ts2021 Noise channel.
 
+use crate::hpack;
 use crate::net::{is_timeout, Conn};
-use std::collections::HashMap;
+use alloc::collections::BTreeMap;
 use std::io::{self, Read, Write};
 use std::time::{Duration, Instant};
 
@@ -37,6 +38,8 @@ type Frame = (u8, u8, u32, Vec<u8>);
 const MAX_FRAME_SIZE: usize = 16_384;
 /// Cap on a stream's accumulated header block (HEADERS + CONTINUATION).
 const MAX_HEADER_BLOCK: usize = 64 * 1024;
+/// The HPACK dynamic table we let the server use (SETTINGS_HEADER_TABLE_SIZE).
+const HEADER_TABLE_SIZE: usize = 4096;
 
 const DEFAULT_WINDOW: u32 = 65_535;
 /// Window we advertise per stream and add to the connection. With
@@ -68,10 +71,9 @@ struct Stream {
 pub struct H2Conn {
     conn: Box<dyn Conn>,
     inbuf: Vec<u8>,
-    encoder: hpack::Encoder<'static>,
-    decoder: hpack::Decoder<'static>,
+    decoder: hpack::Decoder,
     next_stream_id: u32,
-    streams: HashMap<u32, Stream>,
+    streams: BTreeMap<u32, Stream>,
     conn_send_window: i64,
     conn_recv_consumed: u32,
     peer_max_frame: usize,
@@ -102,7 +104,7 @@ impl H2Conn {
             (SETTINGS_MAX_CONCURRENT_STREAMS, 8),
             (SETTINGS_INITIAL_WINDOW_SIZE, OUR_WINDOW),
             (SETTINGS_MAX_FRAME_SIZE, MAX_FRAME_SIZE as u32),
-            (SETTINGS_HEADER_TABLE_SIZE, 4096),
+            (SETTINGS_HEADER_TABLE_SIZE, HEADER_TABLE_SIZE as u32),
         ] {
             settings.extend_from_slice(&id.to_be_bytes());
             settings.extend_from_slice(&val.to_be_bytes());
@@ -123,10 +125,9 @@ impl H2Conn {
         Ok(H2Conn {
             conn,
             inbuf: prefix,
-            encoder: hpack::Encoder::new(),
-            decoder: hpack::Decoder::new(),
+            decoder: hpack::Decoder::new(HEADER_TABLE_SIZE),
             next_stream_id: 1,
-            streams: HashMap::new(),
+            streams: BTreeMap::new(),
             conn_send_window: DEFAULT_WINDOW as i64,
             conn_recv_consumed: 0,
             peer_max_frame: 16_384,
@@ -176,9 +177,10 @@ impl H2Conn {
                 body.len().to_string().into_bytes(),
             ));
         }
-        let block = self
-            .encoder
-            .encode(hdrs.iter().map(|(k, v)| (k.as_slice(), v.as_slice())));
+        let mut block = Vec::new();
+        for (k, v) in &hdrs {
+            hpack::encode_literal(&mut block, k, v);
+        }
         let mut out = Vec::with_capacity(block.len() + body.len() + 32);
         let mut flags = FLAG_END_HEADERS;
         if body.is_empty() {
@@ -472,11 +474,9 @@ impl H2Conn {
                                     s.send_window += delta;
                                 }
                             }
-                            SETTINGS_HEADER_TABLE_SIZE => {
-                                // Our encoder never grows its table beyond the default 4096;
-                                // if the peer allows less, shrink accordingly.
-                                let _ = val;
-                            }
+                            // Our encoder keeps no table (literals without
+                            // indexing), so any size the peer allows is fine.
+                            SETTINGS_HEADER_TABLE_SIZE => {}
                             _ => {}
                         }
                     }
@@ -538,18 +538,10 @@ impl H2Conn {
                 "h2 header block too large",
             ));
         }
-        // The hpack crate panics on some malformed inputs (dynamic table
-        // size updates); on unwinding targets turn that into an error.
-        let decoder = &mut self.decoder;
-        let decoded =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| decoder.decode(&block)))
-                .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "hpack decoder panicked"))?
-                .map_err(|e| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("hpack decode error: {e:?}"),
-                    )
-                })?;
+        let decoded = self
+            .decoder
+            .decode(&block)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("hpack: {e}")))?;
         let s = self.streams.get_mut(&sid).unwrap();
         for (k, v) in decoded {
             let k = String::from_utf8_lossy(&k).to_string();
