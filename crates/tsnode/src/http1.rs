@@ -20,11 +20,62 @@ impl ResponseHead {
     }
 }
 
+/// Why a response head could not be parsed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeadError {
+    TooLarge,
+    NotUtf8,
+    BadStatusLine,
+}
+
+impl core::fmt::Display for HeadError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(match self {
+            HeadError::TooLarge => "http response head too large",
+            HeadError::NotUtf8 => "non-utf8 http response head",
+            HeadError::BadStatusLine => "bad http status line",
+        })
+    }
+}
+
+const MAX_HEAD: usize = 16 * 1024;
+
+/// Parses an HTTP/1.x response head from the start of `buf`: `Ok(None)`
+/// while the head is still incomplete. The bytes after it are `leftover`.
+pub fn parse_response_head(buf: &[u8]) -> Result<Option<ResponseHead>, HeadError> {
+    let Some(end) = find_head_end(buf) else {
+        return if buf.len() > MAX_HEAD {
+            Err(HeadError::TooLarge)
+        } else {
+            Ok(None)
+        };
+    };
+    let head = core::str::from_utf8(&buf[..end]).map_err(|_| HeadError::NotUtf8)?;
+    let mut lines = head.split("\r\n");
+    let status = lines
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .nth(1)
+        .and_then(|s| s.parse::<u16>().ok())
+        .ok_or(HeadError::BadStatusLine)?;
+    let mut headers = Vec::new();
+    for line in lines {
+        if let Some((k, v)) = line.split_once(':') {
+            headers.push((k.trim().to_string(), v.trim().to_string()));
+        }
+    }
+    Ok(Some(ResponseHead {
+        status,
+        headers,
+        leftover: buf[end + 4..].to_vec(),
+    }))
+}
+
 /// Reads an HTTP/1.x response head, byte-wise buffered, from `r`.
 pub fn read_response_head(r: &mut dyn Read) -> io::Result<ResponseHead> {
     let mut buf = Vec::with_capacity(512);
     let mut tmp = [0u8; 256];
-    let end;
     loop {
         let n = r.read(&mut tmp)?;
         if n == 0 {
@@ -34,42 +85,12 @@ pub fn read_response_head(r: &mut dyn Read) -> io::Result<ResponseHead> {
             ));
         }
         buf.extend_from_slice(&tmp[..n]);
-        if let Some(pos) = find_head_end(&buf) {
-            end = pos;
-            break;
-        }
-        if buf.len() > 16 * 1024 {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "http response head too large",
-            ));
+        match parse_response_head(&buf) {
+            Ok(Some(head)) => return Ok(head),
+            Ok(None) => {}
+            Err(e) => return Err(io::Error::new(io::ErrorKind::InvalidData, e.to_string())),
         }
     }
-    let head = std::str::from_utf8(&buf[..end])
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "non-utf8 head"))?;
-    let mut lines = head.split("\r\n");
-    let status_line = lines.next().unwrap_or("");
-    let status = status_line
-        .split_whitespace()
-        .nth(1)
-        .and_then(|s| s.parse::<u16>().ok())
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("bad status line: {status_line:?}"),
-            )
-        })?;
-    let mut headers = Vec::new();
-    for line in lines {
-        if let Some((k, v)) = line.split_once(':') {
-            headers.push((k.trim().to_string(), v.trim().to_string()));
-        }
-    }
-    Ok(ResponseHead {
-        status,
-        headers,
-        leftover: buf[end + 4..].to_vec(),
-    })
 }
 
 fn find_head_end(buf: &[u8]) -> Option<usize> {
@@ -162,14 +183,8 @@ fn dechunk(raw: &[u8]) -> io::Result<Vec<u8>> {
     Ok(out)
 }
 
-/// Writes a simple request with no body.
-pub fn write_request(
-    w: &mut dyn Write,
-    method: &str,
-    path: &str,
-    host: &str,
-    extra_headers: &[(&str, &str)],
-) -> io::Result<()> {
+/// A simple request with no body.
+pub fn request(method: &str, path: &str, host: &str, extra_headers: &[(&str, &str)]) -> Vec<u8> {
     let mut s = format!("{method} {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: tsnode/0.1\r\n");
     for (k, v) in extra_headers {
         s.push_str(k);
@@ -178,7 +193,18 @@ pub fn write_request(
         s.push_str("\r\n");
     }
     s.push_str("\r\n");
-    w.write_all(s.as_bytes())?;
+    s.into_bytes()
+}
+
+/// Writes a simple request with no body.
+pub fn write_request(
+    w: &mut dyn Write,
+    method: &str,
+    path: &str,
+    host: &str,
+    extra_headers: &[(&str, &str)],
+) -> io::Result<()> {
+    w.write_all(&request(method, path, host, extra_headers))?;
     w.flush()
 }
 
@@ -199,4 +225,32 @@ pub fn get(
     let head = read_response_head(conn)?;
     let body = read_body(conn, &head, 256 * 1024)?;
     Ok((head.status, body))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn response_head_is_parsed_once_complete() {
+        let full = b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: DERP\r\n\r\nrest";
+        for cut in 0..full.len() - 4 {
+            assert_eq!(
+                parse_response_head(&full[..cut]).map(|h| h.is_some()),
+                Ok(false)
+            );
+        }
+        let head = parse_response_head(full).unwrap().unwrap();
+        assert_eq!(head.status, 101);
+        assert_eq!(head.header("upgrade"), Some("DERP"));
+        assert_eq!(head.leftover, b"rest");
+        assert_eq!(
+            parse_response_head(b"garbage\r\n\r\n").err(),
+            Some(HeadError::BadStatusLine)
+        );
+        assert_eq!(
+            parse_response_head(&[b'a'; MAX_HEAD + 1]).err(),
+            Some(HeadError::TooLarge)
+        );
+    }
 }

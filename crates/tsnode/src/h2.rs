@@ -1,10 +1,17 @@
 //! A deliberately small HTTP/2 client: one connection, a handful of sequential
 //! streams, no server push, no priorities. It is what the Tailscale control
 //! server speaks inside the ts2021 Noise channel.
+//!
+//! [`H2Session`] is the protocol without I/O: frames, flow control and
+//! headers; bytes go in with [`H2Session::feed`] and come out of
+//! [`H2Session::take_output`]. [`H2Conn`] runs a session over a blocking
+//! [`Conn`].
 
 use crate::hpack;
 use crate::net::{is_timeout, Conn};
 use alloc::collections::BTreeMap;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 use std::io::{self, Read, Write};
 use std::time::{Duration, Instant};
 
@@ -55,22 +62,69 @@ const OUR_WINDOW: u32 = if cfg!(feature = "small-ram") {
 };
 const WINDOW_UPDATE_THRESHOLD: u32 = OUR_WINDOW / 2;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Error {
+    /// The server sent GOAWAY (code and debug text).
+    Goaway(String),
+    StreamReset(u32),
+    UnknownStream,
+    EndedWithoutHeaders,
+    FrameTooLarge(usize),
+    HeaderBlockTooLarge,
+    Hpack(hpack::Error),
+    BadPadding,
+    ShortPriority,
+    PushPromise,
+}
+
+impl core::fmt::Display for Error {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Error::Goaway(g) => write!(f, "h2 goaway: {g}"),
+            Error::StreamReset(r) => write!(f, "stream reset {r}"),
+            Error::UnknownStream => write!(f, "unknown stream"),
+            Error::EndedWithoutHeaders => write!(f, "stream ended without headers"),
+            Error::FrameTooLarge(n) => {
+                write!(f, "h2 frame of {n} bytes exceeds the advertised maximum")
+            }
+            Error::HeaderBlockTooLarge => write!(f, "h2 header block too large"),
+            Error::Hpack(e) => write!(f, "hpack: {e}"),
+            Error::BadPadding => write!(f, "bad padding"),
+            Error::ShortPriority => write!(f, "short priority headers"),
+            Error::PushPromise => write!(f, "unexpected push promise"),
+        }
+    }
+}
+
+impl core::error::Error for Error {}
+
+/// What a stream's body has to offer.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Body {
+    Data(Vec<u8>),
+    /// Nothing yet; more may come.
+    Pending,
+    End,
+}
+
 #[derive(Default)]
 struct Stream {
     status: Option<u16>,
     headers: Vec<(String, String)>,
     header_block: Vec<u8>,
-    headers_done: bool,
     body: Vec<u8>,
     end_stream: bool,
     reset: Option<u32>,
     send_window: i64,
     recv_consumed: u32,
+    /// Request body not sent yet for lack of flow-control window.
+    unsent: Vec<u8>,
 }
 
-pub struct H2Conn {
-    conn: Box<dyn Conn>,
+/// The HTTP/2 protocol of one connection, without I/O.
+pub struct H2Session {
     inbuf: Vec<u8>,
+    out: Vec<u8>,
     decoder: hpack::Decoder,
     next_stream_id: u32,
     streams: BTreeMap<u32, Stream>,
@@ -82,20 +136,10 @@ pub struct H2Conn {
     authority: String,
 }
 
-impl H2Conn {
-    /// Sends the client preface and initial settings. Does not wait for the
-    /// server's settings; they are processed as frames arrive.
-    pub fn new(conn: Box<dyn Conn>, authority: &str) -> io::Result<Self> {
-        Self::with_prefix(conn, authority, Vec::new())
-    }
-
-    /// Like `new`, but `prefix` holds bytes already read from `conn` that
-    /// belong to the HTTP/2 stream.
-    pub fn with_prefix(
-        mut conn: Box<dyn Conn>,
-        authority: &str,
-        prefix: Vec<u8>,
-    ) -> io::Result<Self> {
+impl H2Session {
+    /// Starts a session; the client preface and our settings are the first
+    /// output. `prefix` holds bytes already received that belong to it.
+    pub fn new(authority: &str, prefix: Vec<u8>) -> Self {
         let mut out = Vec::with_capacity(64);
         out.extend_from_slice(PREFACE);
         let mut settings = Vec::new();
@@ -120,11 +164,9 @@ impl H2Conn {
                 &(OUR_WINDOW - DEFAULT_WINDOW).to_be_bytes(),
             );
         }
-        conn.write_all(&out)?;
-        conn.flush()?;
-        Ok(H2Conn {
-            conn,
+        H2Session {
             inbuf: prefix,
+            out,
             decoder: hpack::Decoder::new(HEADER_TABLE_SIZE),
             next_stream_id: 1,
             streams: BTreeMap::new(),
@@ -134,22 +176,39 @@ impl H2Conn {
             peer_initial_window: DEFAULT_WINDOW,
             goaway: None,
             authority: authority.to_string(),
-        })
+        }
     }
 
-    /// Sends a complete request and returns the stream id.
+    /// Bytes waiting to be sent to the server.
+    pub fn take_output(&mut self) -> Vec<u8> {
+        core::mem::take(&mut self.out)
+    }
+
+    pub fn has_output(&self) -> bool {
+        !self.out.is_empty()
+    }
+
+    /// Takes bytes from the server and processes every complete frame.
+    pub fn feed(&mut self, data: &[u8]) -> Result<(), Error> {
+        self.inbuf.extend_from_slice(data);
+        while let Some((typ, flags, sid, payload)) = self.take_frame()? {
+            self.handle_frame(typ, flags, sid, payload)?;
+        }
+        self.send_unsent();
+        Ok(())
+    }
+
+    /// Queues a complete request and returns its stream id. A body larger
+    /// than the server's window goes out as the window opens.
     pub fn request(
         &mut self,
         method: &str,
         path: &str,
         headers: &[(&str, &str)],
         body: &[u8],
-    ) -> io::Result<u32> {
+    ) -> Result<u32, Error> {
         if let Some(g) = &self.goaway {
-            return Err(io::Error::new(
-                io::ErrorKind::ConnectionAborted,
-                format!("h2 connection closed: {g}"),
-            ));
+            return Err(Error::Goaway(g.clone()));
         }
         let id = self.next_stream_id;
         self.next_stream_id += 2;
@@ -157,114 +216,88 @@ impl H2Conn {
             id,
             Stream {
                 send_window: self.peer_initial_window as i64,
+                unsent: body.to_vec(),
                 ..Default::default()
             },
         );
 
-        let mut hdrs: Vec<(Vec<u8>, Vec<u8>)> = vec![
-            (b":method".to_vec(), method.as_bytes().to_vec()),
-            (b":scheme".to_vec(), b"https".to_vec()),
-            (b":authority".to_vec(), self.authority.as_bytes().to_vec()),
-            (b":path".to_vec(), path.as_bytes().to_vec()),
-            (b"user-agent".to_vec(), b"tsnode/0.1".to_vec()),
-        ];
+        let mut block = Vec::new();
+        for (k, v) in [
+            (":method", method),
+            (":scheme", "https"),
+            (":authority", self.authority.as_str()),
+            (":path", path),
+            ("user-agent", "tsnode/0.1"),
+        ] {
+            hpack::encode_literal(&mut block, k.as_bytes(), v.as_bytes());
+        }
         for (k, v) in headers {
-            hdrs.push((k.to_ascii_lowercase().into_bytes(), v.as_bytes().to_vec()));
+            hpack::encode_literal(&mut block, k.to_ascii_lowercase().as_bytes(), v.as_bytes());
         }
         if !body.is_empty() {
-            hdrs.push((
-                b"content-length".to_vec(),
-                body.len().to_string().into_bytes(),
-            ));
+            hpack::encode_literal(
+                &mut block,
+                b"content-length",
+                body.len().to_string().as_bytes(),
+            );
         }
-        let mut block = Vec::new();
-        for (k, v) in &hdrs {
-            hpack::encode_literal(&mut block, k, v);
-        }
-        let mut out = Vec::with_capacity(block.len() + body.len() + 32);
         let mut flags = FLAG_END_HEADERS;
         if body.is_empty() {
             flags |= FLAG_END_STREAM;
         }
-        push_frame(&mut out, FRAME_HEADERS, flags, id, &block);
-        self.conn.write_all(&out)?;
-        self.conn.flush()?;
-        if !body.is_empty() {
-            self.send_body(id, body)?;
-        }
+        push_frame(&mut self.out, FRAME_HEADERS, flags, id, &block);
+        self.send_unsent();
         Ok(id)
     }
 
-    fn send_body(&mut self, id: u32, body: &[u8]) -> io::Result<()> {
-        let mut offset = 0;
-        while offset < body.len() {
-            let stream_window = self.streams.get(&id).map(|s| s.send_window).unwrap_or(0);
-            let allowed = stream_window.min(self.conn_send_window).max(0) as usize;
-            if allowed == 0 {
-                // Wait for WINDOW_UPDATE.
-                self.process_one(Duration::from_secs(30))?;
-                if let Some(r) = self.streams.get(&id).and_then(|s| s.reset) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::ConnectionReset,
-                        format!("stream reset {r}"),
-                    ));
+    /// True while part of the request body of `id` waits for window.
+    pub fn body_unsent(&self, id: u32) -> bool {
+        self.streams.get(&id).is_some_and(|s| !s.unsent.is_empty())
+    }
+
+    /// Sends what the flow-control windows allow of every unsent body.
+    fn send_unsent(&mut self) {
+        for (&id, s) in self.streams.iter_mut() {
+            while !s.unsent.is_empty() && s.reset.is_none() {
+                let allowed = s.send_window.min(self.conn_send_window).max(0) as usize;
+                if allowed == 0 {
+                    break;
                 }
-                continue;
-            }
-            let n = (body.len() - offset).min(allowed).min(self.peer_max_frame);
-            let last = offset + n == body.len();
-            let mut out = Vec::with_capacity(n + 9);
-            push_frame(
-                &mut out,
-                FRAME_DATA,
-                if last { FLAG_END_STREAM } else { 0 },
-                id,
-                &body[offset..offset + n],
-            );
-            self.conn.write_all(&out)?;
-            self.conn.flush()?;
-            offset += n;
-            self.conn_send_window -= n as i64;
-            if let Some(s) = self.streams.get_mut(&id) {
+                let n = s.unsent.len().min(allowed).min(self.peer_max_frame);
+                let last = n == s.unsent.len();
+                push_frame(
+                    &mut self.out,
+                    FRAME_DATA,
+                    if last { FLAG_END_STREAM } else { 0 },
+                    id,
+                    &s.unsent[..n],
+                );
+                s.unsent.drain(..n);
+                self.conn_send_window -= n as i64;
                 s.send_window -= n as i64;
             }
         }
-        Ok(())
     }
 
-    /// Waits for the response headers of `id` and returns the status code.
-    pub fn response_status(&mut self, id: u32, timeout: Duration) -> io::Result<u16> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            if let Some(s) = self.streams.get(&id) {
-                if let Some(r) = s.reset {
-                    return Err(io::Error::new(
-                        io::ErrorKind::ConnectionReset,
-                        format!("stream reset {r}"),
-                    ));
-                }
-                if let Some(st) = s.status {
-                    return Ok(st);
-                }
-                if s.end_stream {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "stream ended without headers",
-                    ));
-                }
-            } else {
-                return Err(io::Error::new(io::ErrorKind::NotFound, "unknown stream"));
-            }
-            self.check_goaway()?;
-            let now = Instant::now();
-            if now >= deadline {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "timeout waiting for response headers",
-                ));
-            }
-            self.process_one(deadline - now)?;
+    fn stream(&self, id: u32) -> Result<&Stream, Error> {
+        let s = self.streams.get(&id).ok_or(Error::UnknownStream)?;
+        if let Some(r) = s.reset {
+            return Err(Error::StreamReset(r));
         }
+        Ok(s)
+    }
+
+    /// The response status of `id`, once its headers are in.
+    pub fn status(&self, id: u32) -> Result<Option<u16>, Error> {
+        let s = self.stream(id)?;
+        if let Some(st) = s.status {
+            return Ok(Some(st));
+        }
+        if s.end_stream {
+            return Err(Error::EndedWithoutHeaders);
+        }
+        self.check_goaway()?;
+        Ok(None)
     }
 
     pub fn response_header(&self, id: u32, name: &str) -> Option<&str> {
@@ -276,107 +309,32 @@ impl H2Conn {
             .map(|(_, v)| v.as_str())
     }
 
-    /// Returns the next available body bytes, `Ok(None)` at end of stream.
-    /// Blocks up to `timeout` for new data.
-    pub fn read_body(&mut self, id: u32, timeout: Duration) -> io::Result<Option<Vec<u8>>> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            {
-                let s = self
-                    .streams
-                    .get_mut(&id)
-                    .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "unknown stream"))?;
-                if !s.body.is_empty() {
-                    return Ok(Some(std::mem::take(&mut s.body)));
-                }
-                if let Some(r) = s.reset {
-                    return Err(io::Error::new(
-                        io::ErrorKind::ConnectionReset,
-                        format!("stream reset {r}"),
-                    ));
-                }
-                if s.end_stream {
-                    return Ok(None);
-                }
-            }
-            self.check_goaway()?;
-            let now = Instant::now();
-            if now >= deadline {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "timeout waiting for body",
-                ));
-            }
-            self.process_one(deadline - now)?;
+    /// The body bytes of `id` received so far.
+    pub fn take_body(&mut self, id: u32) -> Result<Body, Error> {
+        self.stream(id)?;
+        let s = self.streams.get_mut(&id).unwrap();
+        if !s.body.is_empty() {
+            return Ok(Body::Data(core::mem::take(&mut s.body)));
         }
-    }
-
-    /// Reads the whole body.
-    pub fn read_full_body(
-        &mut self,
-        id: u32,
-        timeout: Duration,
-        max: usize,
-    ) -> io::Result<Vec<u8>> {
-        let mut out = Vec::new();
-        while let Some(chunk) = self.read_body(id, timeout)? {
-            out.extend_from_slice(&chunk);
-            if out.len() > max {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "response body too large",
-                ));
-            }
+        if s.end_stream {
+            return Ok(Body::End);
         }
-        self.streams.remove(&id);
-        Ok(out)
+        self.check_goaway()?;
+        Ok(Body::Pending)
     }
 
     pub fn forget_stream(&mut self, id: u32) {
         self.streams.remove(&id);
     }
 
-    fn check_goaway(&self) -> io::Result<()> {
+    fn check_goaway(&self) -> Result<(), Error> {
         match &self.goaway {
-            Some(g) => Err(io::Error::new(
-                io::ErrorKind::ConnectionAborted,
-                format!("h2 goaway: {g}"),
-            )),
+            Some(g) => Err(Error::Goaway(g.clone())),
             None => Ok(()),
         }
     }
 
-    /// Reads and processes one frame, blocking at most `timeout`.
-    fn process_one(&mut self, timeout: Duration) -> io::Result<()> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            if let Some((typ, flags, sid, payload)) = self.take_frame()? {
-                return self.handle_frame(typ, flags, sid, payload);
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                return Err(io::Error::new(io::ErrorKind::TimedOut, "h2 read timeout"));
-            }
-            self.conn
-                .set_read_timeout(Some((deadline - now).max(Duration::from_millis(10))))?;
-            let mut tmp = [0u8; 2048];
-            match self.conn.read(&mut tmp) {
-                Ok(0) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::UnexpectedEof,
-                        "h2 connection closed",
-                    ))
-                }
-                Ok(n) => self.inbuf.extend_from_slice(&tmp[..n]),
-                Err(e) if is_timeout(&e) => {
-                    return Err(io::Error::new(io::ErrorKind::TimedOut, "h2 read timeout"))
-                }
-                Err(e) => return Err(e),
-            }
-        }
-    }
-
-    fn take_frame(&mut self) -> io::Result<Option<Frame>> {
+    fn take_frame(&mut self) -> Result<Option<Frame>, Error> {
         if self.inbuf.len() < 9 {
             return Ok(None);
         }
@@ -386,10 +344,7 @@ impl H2Conn {
         if len > MAX_FRAME_SIZE {
             // Larger than what we advertised in SETTINGS: a protocol error,
             // and on a small device an allocation we must not attempt.
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("h2 frame of {len} bytes exceeds the advertised maximum"),
-            ));
+            return Err(Error::FrameTooLarge(len));
         }
         if self.inbuf.len() < 9 + len {
             return Ok(None);
@@ -403,7 +358,13 @@ impl H2Conn {
         Ok(Some((typ, flags, sid, payload)))
     }
 
-    fn handle_frame(&mut self, typ: u8, flags: u8, sid: u32, payload: Vec<u8>) -> io::Result<()> {
+    fn handle_frame(
+        &mut self,
+        typ: u8,
+        flags: u8,
+        sid: u32,
+        payload: Vec<u8>,
+    ) -> Result<(), Error> {
         match typ {
             FRAME_DATA => {
                 let data = strip_padding(&payload, flags & FLAG_PADDED != 0)?;
@@ -416,27 +377,22 @@ impl H2Conn {
                     s.recv_consumed += len;
                 }
                 self.conn_recv_consumed += len;
-                self.maybe_window_update(sid)?;
+                self.maybe_window_update(sid);
             }
             FRAME_HEADERS => {
                 let mut block = strip_padding(&payload, flags & FLAG_PADDED != 0)?;
                 if flags & FLAG_PRIORITY != 0 {
                     if block.len() < 5 {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "short priority headers",
-                        ));
+                        return Err(Error::ShortPriority);
                     }
                     block = &block[5..];
                 }
-                let end_stream = flags & FLAG_END_STREAM != 0;
-                let end_headers = flags & FLAG_END_HEADERS != 0;
                 let s = self.streams.entry(sid).or_default();
                 s.header_block.extend_from_slice(block);
-                if end_stream {
+                if flags & FLAG_END_STREAM != 0 {
                     s.end_stream = true;
                 }
-                if end_headers {
+                if flags & FLAG_END_HEADERS != 0 {
                     self.finish_headers(sid)?;
                 }
             }
@@ -480,24 +436,13 @@ impl H2Conn {
                             _ => {}
                         }
                     }
-                    let mut out = Vec::new();
-                    push_frame(&mut out, FRAME_SETTINGS, FLAG_ACK, 0, &[]);
-                    self.conn.write_all(&out)?;
-                    self.conn.flush()?;
+                    push_frame(&mut self.out, FRAME_SETTINGS, FLAG_ACK, 0, &[]);
                 }
             }
-            FRAME_PUSH_PROMISE => {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "unexpected push promise",
-                ));
-            }
+            FRAME_PUSH_PROMISE => return Err(Error::PushPromise),
             FRAME_PING => {
                 if flags & FLAG_ACK == 0 {
-                    let mut out = Vec::new();
-                    push_frame(&mut out, FRAME_PING, FLAG_ACK, 0, &payload);
-                    self.conn.write_all(&out)?;
-                    self.conn.flush()?;
+                    push_frame(&mut self.out, FRAME_PING, FLAG_ACK, 0, &payload);
                 }
             }
             FRAME_GOAWAY => {
@@ -507,11 +452,11 @@ impl H2Conn {
                     0
                 };
                 let debug = if payload.len() > 8 {
-                    String::from_utf8_lossy(&payload[8..]).to_string()
+                    String::from_utf8_lossy(&payload[8..]).into_owned()
                 } else {
                     String::new()
                 };
-                self.goaway = Some(format!("code {code} {debug}"));
+                self.goaway = Some(alloc::format!("code {code} {debug}"));
             }
             FRAME_WINDOW_UPDATE if payload.len() >= 4 => {
                 let inc = (u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]])
@@ -527,25 +472,19 @@ impl H2Conn {
         Ok(())
     }
 
-    fn finish_headers(&mut self, sid: u32) -> io::Result<()> {
+    fn finish_headers(&mut self, sid: u32) -> Result<(), Error> {
         let block = match self.streams.get_mut(&sid) {
-            Some(s) => std::mem::take(&mut s.header_block),
+            Some(s) => core::mem::take(&mut s.header_block),
             None => return Ok(()),
         };
         if block.len() > MAX_HEADER_BLOCK {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "h2 header block too large",
-            ));
+            return Err(Error::HeaderBlockTooLarge);
         }
-        let decoded = self
-            .decoder
-            .decode(&block)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("hpack: {e}")))?;
+        let decoded = self.decoder.decode(&block).map_err(Error::Hpack)?;
         let s = self.streams.get_mut(&sid).unwrap();
         for (k, v) in decoded {
-            let k = String::from_utf8_lossy(&k).to_string();
-            let v = String::from_utf8_lossy(&v).to_string();
+            let k = String::from_utf8_lossy(&k).into_owned();
+            let v = String::from_utf8_lossy(&v).into_owned();
             if k == ":status" {
                 if let Ok(code) = v.parse::<u16>() {
                     // Ignore 1xx informational responses.
@@ -557,15 +496,13 @@ impl H2Conn {
                 s.headers.push((k, v));
             }
         }
-        s.headers_done = true;
         Ok(())
     }
 
-    fn maybe_window_update(&mut self, sid: u32) -> io::Result<()> {
-        let mut out = Vec::new();
+    fn maybe_window_update(&mut self, sid: u32) {
         if self.conn_recv_consumed >= WINDOW_UPDATE_THRESHOLD {
             push_frame(
-                &mut out,
+                &mut self.out,
                 FRAME_WINDOW_UPDATE,
                 0,
                 0,
@@ -576,7 +513,7 @@ impl H2Conn {
         if let Some(s) = self.streams.get_mut(&sid) {
             if s.recv_consumed >= WINDOW_UPDATE_THRESHOLD && !s.end_stream {
                 push_frame(
-                    &mut out,
+                    &mut self.out,
                     FRAME_WINDOW_UPDATE,
                     0,
                     sid,
@@ -585,27 +522,173 @@ impl H2Conn {
                 s.recv_consumed = 0;
             }
         }
-        if !out.is_empty() {
-            self.conn.write_all(&out)?;
+    }
+}
+
+fn io_error(e: Error) -> io::Error {
+    let kind = match e {
+        Error::Goaway(_) => io::ErrorKind::ConnectionAborted,
+        Error::StreamReset(_) => io::ErrorKind::ConnectionReset,
+        Error::UnknownStream => io::ErrorKind::NotFound,
+        Error::EndedWithoutHeaders => io::ErrorKind::UnexpectedEof,
+        _ => io::ErrorKind::InvalidData,
+    };
+    io::Error::new(kind, e)
+}
+
+/// An [`H2Session`] over a blocking connection.
+pub struct H2Conn {
+    conn: Box<dyn Conn>,
+    session: H2Session,
+}
+
+impl H2Conn {
+    /// Sends the client preface and initial settings. Does not wait for the
+    /// server's settings; they are processed as frames arrive.
+    pub fn new(conn: Box<dyn Conn>, authority: &str) -> io::Result<Self> {
+        Self::with_prefix(conn, authority, Vec::new())
+    }
+
+    /// Like `new`, but `prefix` holds bytes already read from `conn` that
+    /// belong to the HTTP/2 stream.
+    pub fn with_prefix(conn: Box<dyn Conn>, authority: &str, prefix: Vec<u8>) -> io::Result<Self> {
+        let mut c = H2Conn {
+            conn,
+            session: H2Session::new(authority, prefix),
+        };
+        // Frames that came with the prefix.
+        c.session.feed(&[]).map_err(io_error)?;
+        c.flush()?;
+        Ok(c)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if self.session.has_output() {
+            self.conn.write_all(&self.session.take_output())?;
             self.conn.flush()?;
         }
         Ok(())
     }
+
+    /// Sends a complete request and returns the stream id.
+    pub fn request(
+        &mut self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> io::Result<u32> {
+        let id = self
+            .session
+            .request(method, path, headers, body)
+            .map_err(io_error)?;
+        self.flush()?;
+        while self.session.body_unsent(id) {
+            // Wait for WINDOW_UPDATE.
+            self.process(Duration::from_secs(30))?;
+            self.session.status(id).map_err(io_error)?;
+        }
+        Ok(id)
+    }
+
+    /// Waits for the response headers of `id` and returns the status code.
+    pub fn response_status(&mut self, id: u32, timeout: Duration) -> io::Result<u16> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(st) = self.session.status(id).map_err(io_error)? {
+                return Ok(st);
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "timeout waiting for response headers",
+                ));
+            }
+            self.process(deadline - now)?;
+        }
+    }
+
+    pub fn response_header(&self, id: u32, name: &str) -> Option<&str> {
+        self.session.response_header(id, name)
+    }
+
+    /// Returns the next available body bytes, `Ok(None)` at end of stream.
+    /// Blocks up to `timeout` for new data.
+    pub fn read_body(&mut self, id: u32, timeout: Duration) -> io::Result<Option<Vec<u8>>> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match self.session.take_body(id).map_err(io_error)? {
+                Body::Data(d) => return Ok(Some(d)),
+                Body::End => return Ok(None),
+                Body::Pending => {}
+            }
+            let now = Instant::now();
+            if now >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "timeout waiting for body",
+                ));
+            }
+            self.process(deadline - now)?;
+        }
+    }
+
+    /// Reads the whole body.
+    pub fn read_full_body(
+        &mut self,
+        id: u32,
+        timeout: Duration,
+        max: usize,
+    ) -> io::Result<Vec<u8>> {
+        let mut out = Vec::new();
+        while let Some(chunk) = self.read_body(id, timeout)? {
+            out.extend_from_slice(&chunk);
+            if out.len() > max {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "response body too large",
+                ));
+            }
+        }
+        self.session.forget_stream(id);
+        Ok(out)
+    }
+
+    pub fn forget_stream(&mut self, id: u32) {
+        self.session.forget_stream(id);
+    }
+
+    /// Reads once from the connection, blocking at most `timeout`, and
+    /// processes what came.
+    fn process(&mut self, timeout: Duration) -> io::Result<()> {
+        self.conn
+            .set_read_timeout(Some(timeout.max(Duration::from_millis(10))))?;
+        let mut tmp = [0u8; 2048];
+        match self.conn.read(&mut tmp) {
+            Ok(0) => Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "h2 connection closed",
+            )),
+            Ok(n) => {
+                self.session.feed(&tmp[..n]).map_err(io_error)?;
+                self.flush()
+            }
+            Err(e) if is_timeout(&e) => {
+                Err(io::Error::new(io::ErrorKind::TimedOut, "h2 read timeout"))
+            }
+            Err(e) => Err(e),
+        }
+    }
 }
 
-fn strip_padding(payload: &[u8], padded: bool) -> io::Result<&[u8]> {
+fn strip_padding(payload: &[u8], padded: bool) -> Result<&[u8], Error> {
     if !padded {
         return Ok(payload);
     }
-    if payload.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "empty padded frame",
-        ));
-    }
-    let pad = payload[0] as usize;
+    let pad = *payload.first().ok_or(Error::BadPadding)? as usize;
     if pad + 1 > payload.len() {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "bad padding"));
+        return Err(Error::BadPadding);
     }
     Ok(&payload[1..payload.len() - pad])
 }
@@ -619,4 +702,159 @@ fn push_frame(out: &mut Vec<u8>, typ: u8, flags: u8, sid: u32, payload: &[u8]) {
     out.push(flags);
     out.extend_from_slice(&sid.to_be_bytes());
     out.extend_from_slice(payload);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn frame(typ: u8, flags: u8, sid: u32, payload: &[u8]) -> Vec<u8> {
+        let mut f = Vec::new();
+        push_frame(&mut f, typ, flags, sid, payload);
+        f
+    }
+
+    /// Splits output into frames (after the preface, if present).
+    fn frames(out: &[u8]) -> Vec<Frame> {
+        let mut rest = out.strip_prefix(PREFACE).unwrap_or(out);
+        let mut v = Vec::new();
+        while !rest.is_empty() {
+            let len = ((rest[0] as usize) << 16) | ((rest[1] as usize) << 8) | rest[2] as usize;
+            let sid = u32::from_be_bytes(rest[5..9].try_into().unwrap());
+            v.push((rest[3], rest[4], sid, rest[9..9 + len].to_vec()));
+            rest = &rest[9 + len..];
+        }
+        v
+    }
+
+    fn setting(id: u16, val: u32) -> Vec<u8> {
+        let mut s = id.to_be_bytes().to_vec();
+        s.extend_from_slice(&val.to_be_bytes());
+        s
+    }
+
+    #[test]
+    fn a_request_and_its_response() {
+        let mut s = H2Session::new("example.com", Vec::new());
+        let start = s.take_output();
+        assert!(start.starts_with(PREFACE));
+        assert_eq!(frames(&start)[0].0, FRAME_SETTINGS);
+
+        let id = s
+            .request("POST", "/machine/map", &[("Content-Type", "x")], b"{}")
+            .unwrap();
+        assert_eq!(id, 1);
+        let sent = frames(&s.take_output());
+        assert_eq!(sent.len(), 2);
+        assert_eq!((sent[0].0, sent[0].1), (FRAME_HEADERS, FLAG_END_HEADERS));
+        let fields = hpack::Decoder::new(4096).decode(&sent[0].3).unwrap();
+        assert!(fields.contains(&(b":path".to_vec(), b"/machine/map".to_vec())));
+        assert!(fields.contains(&(b"content-type".to_vec(), b"x".to_vec())));
+        assert!(fields.contains(&(b"content-length".to_vec(), b"2".to_vec())));
+        assert_eq!(sent[1], (FRAME_DATA, FLAG_END_STREAM, 1, b"{}".to_vec()));
+
+        assert_eq!(s.status(1), Ok(None));
+        let mut input = frame(FRAME_SETTINGS, 0, 0, &[]);
+        input.extend(frame(FRAME_PING, 0, 0, b"pingpong"));
+        input.extend(frame(FRAME_HEADERS, FLAG_END_HEADERS, 1, &[0x88])); // :status 200
+        input.extend(frame(FRAME_DATA, 0, 1, b"hel"));
+        input.extend(frame(FRAME_DATA, FLAG_END_STREAM, 1, b"lo"));
+        // Fed a byte at a time.
+        for b in &input {
+            s.feed(&[*b]).unwrap();
+        }
+        assert_eq!(s.status(1), Ok(Some(200)));
+        assert_eq!(s.take_body(1), Ok(Body::Data(b"hello".to_vec())));
+        assert_eq!(s.take_body(1), Ok(Body::End));
+        let replies = frames(&s.take_output());
+        assert_eq!(
+            replies,
+            vec![
+                (FRAME_SETTINGS, FLAG_ACK, 0, vec![]),
+                (FRAME_PING, FLAG_ACK, 0, b"pingpong".to_vec()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_body_waits_for_the_window() {
+        let mut s = H2Session::new("h", Vec::new());
+        s.take_output();
+        s.feed(&frame(
+            FRAME_SETTINGS,
+            0,
+            0,
+            &setting(SETTINGS_INITIAL_WINDOW_SIZE, 10),
+        ))
+        .unwrap();
+        s.take_output();
+        let id = s.request("POST", "/", &[], &[b'x'; 25]).unwrap();
+        let sent = frames(&s.take_output());
+        assert_eq!(sent[1], (FRAME_DATA, 0, id, vec![b'x'; 10]));
+        assert!(s.body_unsent(id));
+        s.feed(&frame(FRAME_WINDOW_UPDATE, 0, id, &20u32.to_be_bytes()))
+            .unwrap();
+        let sent = frames(&s.take_output());
+        assert_eq!(
+            sent,
+            vec![(FRAME_DATA, FLAG_END_STREAM, id, vec![b'x'; 15])]
+        );
+        assert!(!s.body_unsent(id));
+    }
+
+    #[test]
+    fn receive_windows_are_reopened() {
+        let mut s = H2Session::new("h", Vec::new());
+        s.take_output();
+        let id = s.request("GET", "/", &[], &[]).unwrap();
+        s.take_output();
+        let chunk = vec![0u8; 1024];
+        let mut updates = 0;
+        for _ in 0..(OUR_WINDOW as usize / 1024) {
+            s.feed(&frame(FRAME_DATA, 0, id, &chunk)).unwrap();
+            updates += frames(&s.take_output())
+                .iter()
+                .filter(|f| f.0 == FRAME_WINDOW_UPDATE && f.2 == id)
+                .count();
+        }
+        assert!(
+            updates >= 1,
+            "the stream window is reopened before it runs out"
+        );
+    }
+
+    #[test]
+    fn errors_from_the_server() {
+        let mut s = H2Session::new("h", Vec::new());
+        let id = s.request("GET", "/", &[], &[]).unwrap();
+        s.feed(&frame(FRAME_RST_STREAM, 0, id, &8u32.to_be_bytes()))
+            .unwrap();
+        assert_eq!(s.status(id), Err(Error::StreamReset(8)));
+        assert_eq!(s.status(99), Err(Error::UnknownStream));
+
+        let mut s = H2Session::new("h", Vec::new());
+        let id = s.request("GET", "/", &[], &[]).unwrap();
+        let mut goaway = 0u32.to_be_bytes().to_vec();
+        goaway.extend_from_slice(&2u32.to_be_bytes());
+        goaway.extend_from_slice(b"bye");
+        s.feed(&frame(FRAME_GOAWAY, 0, 0, &goaway)).unwrap();
+        assert_eq!(s.status(id), Err(Error::Goaway("code 2 bye".into())));
+        assert!(s.request("GET", "/", &[], &[]).is_err());
+
+        let mut s = H2Session::new("h", Vec::new());
+        assert_eq!(
+            s.feed(&[0x01, 0x00, 0x00, 0, 0, 0, 0, 0, 0]),
+            Err(Error::FrameTooLarge(65536))
+        );
+        let mut s = H2Session::new("h", Vec::new());
+        assert_eq!(
+            s.feed(&frame(FRAME_HEADERS, FLAG_END_HEADERS, 1, &[0x80])),
+            Err(Error::Hpack(hpack::Error::BadIndex(0)))
+        );
+        let mut s = H2Session::new("h", Vec::new());
+        assert_eq!(
+            s.feed(&frame(FRAME_DATA, FLAG_PADDED, 1, &[5, 1])),
+            Err(Error::BadPadding)
+        );
+    }
 }

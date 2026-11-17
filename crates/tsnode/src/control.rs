@@ -115,28 +115,27 @@ impl ControlClient {
             CAPABILITY_VERSION,
         )?;
         debug!("control: noise handshake complete");
-        // The server may send an "early payload" (a node-key challenge) before
-        // HTTP/2 starts: magic "\xff\xff\xffTS" + u32 BE length + JSON.
-        let mut hdr = [0u8; 9];
         noise.set_read_timeout(Some(REQUEST_TIMEOUT))?;
-        std::io::Read::read_exact(&mut noise, &mut hdr)?;
-        let prefix = if &hdr[..5] == b"\xff\xff\xffTS" {
-            let len = u32::from_be_bytes([hdr[5], hdr[6], hdr[7], hdr[8]]) as usize;
-            if len > 1 << 20 {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "early payload too large",
-                ));
+        let mut buf = Vec::new();
+        let prefix = loop {
+            match early_payload(&buf)? {
+                Early::NeedMore => {
+                    let mut tmp = [0u8; 512];
+                    let n = std::io::Read::read(&mut noise, &mut tmp)?;
+                    if n == 0 {
+                        return Err(io::Error::new(
+                            io::ErrorKind::UnexpectedEof,
+                            "control: transport closed before HTTP/2",
+                        ));
+                    }
+                    buf.extend_from_slice(&tmp[..n]);
+                }
+                Early::Payload { json, len } => {
+                    debug!("control: early payload {}", String::from_utf8_lossy(&json));
+                    break buf.split_off(len);
+                }
+                Early::None => break buf,
             }
-            let mut payload = vec![0u8; len];
-            std::io::Read::read_exact(&mut noise, &mut payload)?;
-            debug!(
-                "control: early payload {}",
-                String::from_utf8_lossy(&payload)
-            );
-            Vec::new()
-        } else {
-            hdr.to_vec()
         };
         H2Conn::with_prefix(Box::new(noise), &self.url.authority(), prefix)
     }
@@ -221,6 +220,46 @@ impl ControlClient {
             None => Ok(MapResponse::default()),
         }
     }
+}
+
+/// What a fresh ts2021 transport starts with.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Early {
+    /// Too few bytes to tell.
+    NeedMore,
+    /// An early payload (a node-key challenge) of `len` bytes in all.
+    Payload { json: Vec<u8>, len: usize },
+    /// HTTP/2 right away.
+    None,
+}
+
+const EARLY_MAGIC: &[u8; 5] = b"\xff\xff\xffTS";
+const MAX_EARLY_PAYLOAD: usize = 1 << 20;
+
+/// Looks for the early payload the server may send before HTTP/2:
+/// magic `\xff\xff\xffTS`, u32 BE length, JSON.
+pub fn early_payload(buf: &[u8]) -> io::Result<Early> {
+    let n = buf.len().min(EARLY_MAGIC.len());
+    if buf[..n] != EARLY_MAGIC[..n] {
+        return Ok(Early::None);
+    }
+    if buf.len() < 9 {
+        return Ok(Early::NeedMore);
+    }
+    let len = u32::from_be_bytes([buf[5], buf[6], buf[7], buf[8]]) as usize;
+    if len > MAX_EARLY_PAYLOAD {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "early payload too large",
+        ));
+    }
+    if buf.len() < 9 + len {
+        return Ok(Early::NeedMore);
+    }
+    Ok(Early::Payload {
+        json: buf[9..9 + len].to_vec(),
+        len: 9 + len,
+    })
 }
 
 /// Fetches the control server's Noise public key from `/key`.
@@ -430,6 +469,25 @@ pub fn hostinfo(hostname: &str, version: &str, preferred_derp: i32) -> Hostinfo 
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn early_payload_or_http2() {
+        assert_eq!(early_payload(b"").unwrap(), Early::NeedMore);
+        assert_eq!(early_payload(b"\xff\xff").unwrap(), Early::NeedMore);
+        // The HTTP/2 preface starts with "PRI".
+        assert_eq!(early_payload(b"PRI * HTTP/2.0").unwrap(), Early::None);
+        let mut buf = b"\xff\xff\xffTS\x00\x00\x00\x02{}".to_vec();
+        assert_eq!(early_payload(&buf[..10]).unwrap(), Early::NeedMore);
+        buf.extend_from_slice(b"PRI");
+        assert_eq!(
+            early_payload(&buf).unwrap(),
+            Early::Payload {
+                json: b"{}".to_vec(),
+                len: 11
+            }
+        );
+        assert!(early_payload(b"\xff\xff\xffTS\x7f\x00\x00\x00").is_err());
+    }
+
     use super::*;
 
     /// A map stream fed from prepared pieces; `None` is a timeout.

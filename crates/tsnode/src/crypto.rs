@@ -137,6 +137,27 @@ pub fn aead_decrypt_in_place(
         .map_err(|_| CryptoError)
 }
 
+/// Decrypts `buf` (ciphertext followed by the tag) where it lies and
+/// returns the plaintext's length: the plaintext is `buf[..len]`.
+pub fn aead_decrypt_slice(
+    key: &[u8; 32],
+    counter: u64,
+    buf: &mut [u8],
+    ad: &[u8],
+) -> Result<usize, CryptoError> {
+    let len = buf.len().checked_sub(TAG_LEN).ok_or(CryptoError)?;
+    let (msg, tag) = buf.split_at_mut(len);
+    ChaCha20Poly1305::new(Key::from_slice(key))
+        .decrypt_in_place_detached(
+            &nonce_from_counter(counter),
+            ad,
+            msg,
+            chacha20poly1305::Tag::from_slice(tag),
+        )
+        .map_err(|_| CryptoError)?;
+    Ok(len)
+}
+
 /// X25519 Diffie-Hellman.
 pub fn x25519(secret: &[u8; 32], public: &[u8; 32]) -> [u8; 32] {
     let sk = x25519_dalek::StaticSecret::from(*secret);
