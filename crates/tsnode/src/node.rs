@@ -8,13 +8,12 @@ use crate::magicsock::{MagicSock, PeerStatus};
 use crate::net::Dialer;
 use crate::netstack::{NetStack, TcpListener};
 use crate::types::*;
-use crate::wireguard::WALL_CLOCK_OFFSET_SECS;
 use log::{debug, info, warn};
 use std::io;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 /// Persistent key/value storage for node identity.
 pub trait Store: Send + Sync {
@@ -461,18 +460,11 @@ impl Node {
         }
         inner.status.lock().unwrap().map_updates += 1;
         if let Some(ct) = resp.control_time.as_deref().and_then(parse_rfc3339_secs) {
-            let local = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
-            let offset = ct - local;
-            if offset.abs() > 5 {
-                debug!("node: clock offset from control time: {offset}s");
-            }
-            WALL_CLOCK_OFFSET_SECS.store(
-                offset.clamp(i32::MIN as i64, i32::MAX as i64) as i32,
-                Ordering::Relaxed,
-            );
+            // Devices without a clock of their own date WireGuard handshakes
+            // by control's time.
+            inner
+                .magicsock
+                .set_unix_time(Duration::from_secs(ct.max(0) as u64));
         }
         if let Some(node) = &resp.node {
             let mut addrs = Vec::new();

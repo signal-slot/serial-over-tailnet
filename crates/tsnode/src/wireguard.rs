@@ -7,8 +7,8 @@ use crate::crypto::{
 };
 use crate::keys::KeyPair;
 use crate::noise::SymmetricState;
-use core::sync::atomic::{AtomicI32, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use crate::time::{Instant, WallClock};
+use core::time::Duration;
 
 pub const CONSTRUCTION: &[u8] = b"Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s";
 pub const IDENTIFIER: &[u8] = b"WireGuard v1 zx2c4 Jason@zx2c4.com";
@@ -30,11 +30,6 @@ pub const KEEPALIVE_TIMEOUT: Duration = Duration::from_secs(10);
 pub const REKEY_AFTER_MESSAGES: u64 = 1 << 60;
 const MAX_HANDSHAKE_ATTEMPTS: u32 = 18;
 
-/// Offset (seconds) added to the system clock when producing TAI64N
-/// timestamps. The node sets it from the control server's `ControlTime` so
-/// that devices without an RTC still produce increasing timestamps.
-pub static WALL_CLOCK_OFFSET_SECS: AtomicI32 = AtomicI32::new(0);
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WgError {
     BadLength,
@@ -53,18 +48,6 @@ impl core::fmt::Display for WgError {
     }
 }
 impl core::error::Error for WgError {}
-
-fn tai64n_now() -> [u8; 12] {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or(Duration::ZERO);
-    let secs = now.as_secs() as i64 + WALL_CLOCK_OFFSET_SECS.load(Ordering::Relaxed) as i64;
-    let tai = (secs.max(0) as u64).wrapping_add(0x4000_0000_0000_000a);
-    let mut out = [0u8; 12];
-    out[..8].copy_from_slice(&tai.to_be_bytes());
-    out[8..].copy_from_slice(&now.subsec_nanos().to_be_bytes());
-    out
-}
 
 fn mac1_key(public: &[u8; 32]) -> [u8; 32] {
     blake2s(&[LABEL_MAC1, public])
@@ -267,7 +250,7 @@ impl Tunn {
         self.last_received
     }
 
-    fn new_initiation(&mut self, now: Instant) -> Vec<u8> {
+    fn new_initiation(&mut self, now: Instant, wall: WallClock) -> Vec<u8> {
         let mut s = SymmetricState::new(CONSTRUCTION);
         s.mix_hash(IDENTIFIER);
         s.mix_hash(&self.peer_public);
@@ -278,7 +261,7 @@ impl Tunn {
         s.mix_dh(&e, &self.peer_public);
         let enc_static = s.encrypt_and_hash(self.local.public());
         s.mix_dh(self.local.secret(), &self.peer_public);
-        let enc_ts = s.encrypt_and_hash(&tai64n_now());
+        let enc_ts = s.encrypt_and_hash(&wall.tai64n(now));
         let local_index = u32::from_le_bytes(random_array());
         let mut msg = Vec::with_capacity(INITIATION_LEN);
         msg.extend_from_slice(&[MSG_INITIATION, 0, 0, 0]);
@@ -301,8 +284,8 @@ impl Tunn {
     }
 
     /// Ensures a handshake is in flight (if no usable session exists). Returns
-    /// the initiation to send, if a new one was created.
-    pub fn initiate_if_needed(&mut self, now: Instant) -> Option<Vec<u8>> {
+    /// the initiation to send, if a new one was created. `wall` dates it.
+    pub fn initiate_if_needed(&mut self, now: Instant, wall: WallClock) -> Option<Vec<u8>> {
         if self.current.is_some() {
             return None;
         }
@@ -313,13 +296,13 @@ impl Tunn {
                 self.queued.clear();
                 None
             }
-            _ => Some(self.new_initiation(now)),
+            _ => Some(self.new_initiation(now, wall)),
         }
     }
 
     /// Encrypts an IP packet. If no session exists the packet is queued and a
     /// handshake initiation is returned instead.
-    pub fn encapsulate(&mut self, ip_packet: &[u8], now: Instant) -> Vec<Vec<u8>> {
+    pub fn encapsulate(&mut self, ip_packet: &[u8], now: Instant, wall: WallClock) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         // Deviation from the WireGuard paper: as responder we send on the
         // new session before the initiator has confirmed it (the initiator
@@ -330,7 +313,7 @@ impl Tunn {
                 if now.duration_since(s.created) >= REJECT_AFTER_TIME {
                     self.current = None;
                     self.queue(ip_packet);
-                    if let Some(init) = self.initiate_if_needed(now) {
+                    if let Some(init) = self.initiate_if_needed(now, wall) {
                         out.push(init);
                     }
                     return out;
@@ -343,12 +326,12 @@ impl Tunn {
                         || s.send_counter >= REKEY_AFTER_MESSAGES)
                     && self.pending.is_none()
                 {
-                    out.push(self.new_initiation(now));
+                    out.push(self.new_initiation(now, wall));
                 }
             }
             None => {
                 self.queue(ip_packet);
-                if let Some(init) = self.initiate_if_needed(now) {
+                if let Some(init) = self.initiate_if_needed(now, wall) {
                     out.push(init);
                 }
             }
@@ -546,7 +529,7 @@ impl Tunn {
     }
 
     /// Periodic maintenance: handshake retransmits, passive keepalives, expiry.
-    pub fn tick(&mut self, now: Instant) -> Vec<Vec<u8>> {
+    pub fn tick(&mut self, now: Instant, wall: WallClock) -> Vec<Vec<u8>> {
         let mut out = Vec::new();
         if let Some(s) = &self.current {
             if now.duration_since(s.created) >= REJECT_AFTER_TIME {
@@ -559,7 +542,7 @@ impl Tunn {
             }
         }
         if self.pending.is_some() || (!self.queued.is_empty() && self.current.is_none()) {
-            if let Some(init) = self.initiate_if_needed(now) {
+            if let Some(init) = self.initiate_if_needed(now, wall) {
                 out.push(init);
             }
         }
@@ -641,11 +624,12 @@ mod tests {
         let b = KeyPair::generate();
         let mut ta = Tunn::new(a.clone(), *b.public());
         let mut tb = Tunn::new(b.clone(), *a.public());
-        let now = Instant::now();
+        let now = Instant::from_millis(1000);
+        let wall = WallClock::default();
 
         // A wants to send: gets an initiation and queues the packet.
         let pkt = ipv4_packet(33);
-        let msgs = ta.encapsulate(&pkt, now);
+        let msgs = ta.encapsulate(&pkt, now, wall);
         assert_eq!(msgs.len(), 1);
         assert_eq!(message_type(&msgs[0]), Some(MSG_INITIATION));
 
@@ -665,7 +649,7 @@ mod tests {
 
         // B replies.
         let reply = ipv4_packet(7);
-        let msgs = tb.encapsulate(&reply, now);
+        let msgs = tb.encapsulate(&reply, now, wall);
         assert_eq!(msgs.len(), 1);
         let got = ta.consume_transport(&msgs[0], now).unwrap().unwrap();
         assert_eq!(got, reply);
@@ -679,9 +663,9 @@ mod tests {
         // Passive keepalive from B after receiving without sending for 10s.
         let later = now + Duration::from_secs(11);
         let _ = tb
-            .consume_transport(&ta.encapsulate(&pkt, later)[0], later)
+            .consume_transport(&ta.encapsulate(&pkt, later, wall)[0], later)
             .unwrap();
-        let ka = tb.tick(later + Duration::from_secs(1));
+        let ka = tb.tick(later + Duration::from_secs(1), wall);
         assert_eq!(ka.len(), 1);
         assert!(ta.consume_transport(&ka[0], later).unwrap().is_none());
     }
@@ -692,8 +676,9 @@ mod tests {
         let b = KeyPair::generate();
         let mut ta = Tunn::new(a.clone(), *b.public());
         let mut tb = Tunn::new(b.clone(), *a.public());
-        let now = Instant::now();
-        let init = ta.initiate_if_needed(now).unwrap();
+        let now = Instant::from_millis(1000);
+        let wall = WallClock::default();
+        let init = ta.initiate_if_needed(now, wall).unwrap();
         let ci = consume_initiation(&b, &init).expect("consume");
         tb.accept_initiation(ci, now).unwrap();
         let ci2 = consume_initiation(&b, &init).expect("consume again");

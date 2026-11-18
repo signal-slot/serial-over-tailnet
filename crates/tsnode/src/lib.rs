@@ -25,5 +25,6 @@ pub mod netstack;
 pub mod node;
 pub mod noise;
 pub mod stun;
+pub mod time;
 pub mod types;
 pub mod wireguard;

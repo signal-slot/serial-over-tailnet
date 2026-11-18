@@ -24,5 +24,8 @@ hpack = "0.3"
 env_logger = "0.11"
 
 [features]
+default = ["std"]
+# The threads, sockets and system clock that drive the state machines.
+std = []
 # Smaller TCP buffers, for a device with a few hundred kilobytes of RAM in all.
 small-ram = []

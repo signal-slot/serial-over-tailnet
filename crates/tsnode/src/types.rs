@@ -256,7 +256,7 @@ pub struct PeerChange {
 }
 
 /// A DERP server as the map gives it; only what dialing and STUN use.
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(default, rename_all = "PascalCase")]
 pub struct DerpNode {
     #[serde(rename = "RegionID")]
