@@ -124,8 +124,13 @@ impl MagicSock {
         self.inner.core.lock().unwrap()
     }
 
+    /// Reads the core.
+    pub fn inspect<R>(&self, f: impl FnOnce(&MagicCore) -> R) -> R {
+        f(&self.core())
+    }
+
     /// Runs `f` on the core, then carries out what it asked for.
-    fn with_core<R>(&self, f: impl FnOnce(&mut MagicCore) -> R) -> R {
+    pub fn with_core<R>(&self, f: impl FnOnce(&mut MagicCore) -> R) -> R {
         let mut core = self.core();
         let r = f(&mut core);
         self.flush(core);

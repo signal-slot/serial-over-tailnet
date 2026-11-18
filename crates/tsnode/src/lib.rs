@@ -11,6 +11,7 @@ extern crate alloc;
 
 pub mod control;
 pub mod controlbase;
+pub mod controlconn;
 pub mod crypto;
 pub mod derp;
 pub mod disco;

@@ -3,18 +3,15 @@
 //! length-prefixed encrypted records over which HTTP/2 is spoken.
 //!
 //! [`ClientUpgrade`] (the upgrade and the handshake) and [`NoiseTransport`]
-//! (the records) are the protocol without I/O. [`dial`] and [`NoiseConn`]
-//! run them over a blocking [`Conn`].
+//! (the records) are the protocol without I/O; [`crate::controlconn`] puts
+//! them together with HTTP/2.
 
 use crate::crypto::{aead_encrypt, x25519_generate, x25519_public, TAG_LEN};
 use crate::http1;
-use crate::net::Conn;
 use crate::noise::SymmetricState;
 use alloc::string::String;
 use alloc::vec::Vec;
 use base64::Engine as _;
-use std::io::{self, Read, Write};
-use std::time::Duration;
 
 pub const PROTOCOL_NAME: &[u8] = b"Noise_IK_25519_ChaChaPoly_BLAKE2s";
 const PROLOGUE_PREFIX: &str = "Tailscale Control Protocol v";
@@ -86,16 +83,6 @@ impl core::fmt::Display for Error {
 }
 
 impl core::error::Error for Error {}
-
-fn io_error(e: Error) -> io::Error {
-    let kind = match e {
-        Error::UpgradeFailed(..) => io::ErrorKind::ConnectionRefused,
-        Error::Rejected(_) | Error::ResponseAuth => io::ErrorKind::PermissionDenied,
-        Error::Server(_) => io::ErrorKind::Other,
-        _ => io::ErrorKind::InvalidData,
-    };
-    io::Error::new(kind, e)
-}
 
 fn prologue(version: u16) -> Vec<u8> {
     alloc::format!("{PROLOGUE_PREFIX}{version}").into_bytes()
@@ -465,96 +452,10 @@ impl ClientUpgrade {
     }
 }
 
-/// A [`NoiseTransport`] over a blocking connection.
-pub struct NoiseConn {
-    inner: Box<dyn Conn>,
-    transport: NoiseTransport,
-}
-
-impl NoiseConn {
-    pub fn new(inner: Box<dyn Conn>, keys: SessionKeys, leftover: Vec<u8>) -> io::Result<Self> {
-        let mut transport = NoiseTransport::new(keys);
-        transport.feed(&leftover).map_err(io_error)?;
-        Ok(NoiseConn { inner, transport })
-    }
-}
-
-impl Read for NoiseConn {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        while self.transport.plaintext().is_empty() {
-            let want = self.transport.wanted();
-            let result = self.inner.read(self.transport.read_buffer(want));
-            let n = result.inspect_err(|_| {
-                let _ = self.transport.received(0);
-            })?;
-            self.transport.received(n).map_err(io_error)?;
-            if n == 0 {
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "noise transport closed",
-                ));
-            }
-        }
-        let avail = self.transport.plaintext();
-        let n = avail.len().min(buf.len());
-        buf[..n].copy_from_slice(&avail[..n]);
-        self.transport.consume(n);
-        Ok(n)
-    }
-}
-
-impl Write for NoiseConn {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        let mut out = Vec::with_capacity(buf.len() + 64);
-        self.transport.seal(buf, &mut out);
-        self.inner.write_all(&out)?;
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        self.inner.flush()
-    }
-}
-
-impl Conn for NoiseConn {
-    fn set_read_timeout(&mut self, timeout: Option<Duration>) -> io::Result<()> {
-        self.inner.set_read_timeout(timeout)
-    }
-}
-
-/// Runs the full client handshake over `conn` using the HTTP upgrade.
-pub fn dial(
-    mut conn: Box<dyn Conn>,
-    host: &str,
-    machine_secret: &[u8; 32],
-    control_pub: &[u8; 32],
-    version: u16,
-) -> io::Result<NoiseConn> {
-    let mut up = ClientUpgrade::new(host, machine_secret, control_pub, version);
-    conn.write_all(&up.take_output())?;
-    conn.flush()?;
-    conn.set_read_timeout(Some(Duration::from_secs(20)))?;
-    let mut tmp = [0u8; 1024];
-    loop {
-        let n = conn.read(&mut tmp)?;
-        if n == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "server closed during noise handshake",
-            ));
-        }
-        if let Some((keys, leftover)) = up.feed(&tmp[..n]).map_err(io_error)? {
-            return NoiseConn::new(conn, keys, leftover);
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::crypto::x25519_public;
-    use std::io::{Read, Write};
-    use std::net::{TcpListener, TcpStream};
 
     /// The server's half: answers the upgrade request in `req`.
     fn serve_upgrade(control_secret: &[u8; 32], req: &[u8]) -> (SessionKeys, Vec<u8>) {
@@ -674,47 +575,5 @@ mod tests {
         let mut other_up = ClientUpgrade::new("h", &x25519_generate(), &x25519_public(&other), 106);
         let (_, reply) = serve_upgrade(&other, &other_up.take_output());
         assert_eq!(up.feed(&reply).err(), Some(Error::ResponseAuth));
-    }
-
-    #[test]
-    fn handshake_and_records_roundtrip() {
-        let control_secret = x25519_generate();
-        let control_pub = x25519_public(&control_secret);
-        let machine_secret = x25519_generate();
-        let machine_pub = x25519_public(&machine_secret);
-
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let server = std::thread::spawn(move || {
-            let (mut s, _) = listener.accept().unwrap();
-            let mut init = [0u8; INITIATION_LEN];
-            s.read_exact(&mut init).unwrap();
-            let (keys, mpub, resp) = server_handshake(&control_secret, &init).unwrap();
-            assert_eq!(mpub, machine_pub);
-            s.write_all(&resp).unwrap();
-            let mut nc = NoiseConn::new(Box::new(s), keys, vec![]).unwrap();
-            let mut buf = [0u8; 5];
-            nc.read_exact(&mut buf).unwrap();
-            assert_eq!(&buf, b"hello");
-            nc.write_all(b"world").unwrap();
-            let big = vec![7u8; 100_000];
-            nc.write_all(&big).unwrap();
-        });
-
-        let mut c = TcpStream::connect(addr).unwrap();
-        let hs = ClientHandshake::new(&machine_secret, &control_pub, 106);
-        c.write_all(&hs.initiation).unwrap();
-        let mut resp = [0u8; RESPONSE_LEN];
-        c.read_exact(&mut resp).unwrap();
-        let keys = hs.finish(&resp).unwrap();
-        let mut nc = NoiseConn::new(Box::new(c), keys, vec![]).unwrap();
-        nc.write_all(b"hello").unwrap();
-        let mut buf = [0u8; 5];
-        nc.read_exact(&mut buf).unwrap();
-        assert_eq!(&buf, b"world");
-        let mut big = vec![0u8; 100_000];
-        nc.read_exact(&mut big).unwrap();
-        assert!(big.iter().all(|&b| b == 7));
-        server.join().unwrap();
     }
 }

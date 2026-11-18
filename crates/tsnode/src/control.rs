@@ -1,17 +1,17 @@
 //! Tailscale control-plane client (`/key`, `/machine/register`, `/machine/map`)
 //! over the ts2021 Noise transport.
 
-use crate::controlbase;
-use crate::h2::H2Conn;
+use crate::controlconn::{self, ControlConn};
+use crate::h2::{self, Body};
 use crate::http1;
 use crate::keys::{fmt_machine_pub, parse_prefixed, KeyPair, MACHINE_PUB_PREFIX};
-use crate::net::{Conn, Dialer};
+use crate::net::{is_timeout, Conn, Dialer};
 use crate::types::*;
-use log::{debug, info, warn};
+use log::{info, warn};
 use serde::Deserialize;
 use std::io;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 /// The map stream sends keep-alives roughly every minute; give it slack.
@@ -104,40 +104,16 @@ impl ControlClient {
         &self.url
     }
 
-    /// Opens a ts2021 connection and sets up HTTP/2 on it.
-    fn dial(&self) -> io::Result<H2Conn> {
+    /// Opens a ts2021 connection, ready for HTTP/2 requests.
+    fn dial(&self) -> io::Result<ControlIo> {
         let conn = self.dial_transport()?;
-        let mut noise = controlbase::dial(
-            conn,
+        let cc = ControlConn::new(
             &self.url.authority(),
             self.machine.secret(),
             &self.control_pub,
             CAPABILITY_VERSION,
-        )?;
-        debug!("control: noise handshake complete");
-        noise.set_read_timeout(Some(REQUEST_TIMEOUT))?;
-        let mut buf = Vec::new();
-        let prefix = loop {
-            match early_payload(&buf)? {
-                Early::NeedMore => {
-                    let mut tmp = [0u8; 512];
-                    let n = std::io::Read::read(&mut noise, &mut tmp)?;
-                    if n == 0 {
-                        return Err(io::Error::new(
-                            io::ErrorKind::UnexpectedEof,
-                            "control: transport closed before HTTP/2",
-                        ));
-                    }
-                    buf.extend_from_slice(&tmp[..n]);
-                }
-                Early::Payload { json, len } => {
-                    debug!("control: early payload {}", String::from_utf8_lossy(&json));
-                    break buf.split_off(len);
-                }
-                Early::None => break buf,
-            }
-        };
-        H2Conn::with_prefix(Box::new(noise), &self.url.authority(), prefix)
+        );
+        ControlIo::open(conn, cc)
     }
 
     fn dial_transport(&self) -> io::Result<Box<dyn Conn>> {
@@ -160,7 +136,7 @@ impl ControlClient {
 
     fn post_json<T: serde::Serialize>(
         &self,
-        h2: &mut H2Conn,
+        h2: &mut ControlIo,
         path: &str,
         body: &T,
     ) -> io::Result<u32> {
@@ -222,46 +198,6 @@ impl ControlClient {
     }
 }
 
-/// What a fresh ts2021 transport starts with.
-#[derive(Debug, PartialEq, Eq)]
-pub enum Early {
-    /// Too few bytes to tell.
-    NeedMore,
-    /// An early payload (a node-key challenge) of `len` bytes in all.
-    Payload { json: Vec<u8>, len: usize },
-    /// HTTP/2 right away.
-    None,
-}
-
-const EARLY_MAGIC: &[u8; 5] = b"\xff\xff\xffTS";
-const MAX_EARLY_PAYLOAD: usize = 1 << 20;
-
-/// Looks for the early payload the server may send before HTTP/2:
-/// magic `\xff\xff\xffTS`, u32 BE length, JSON.
-pub fn early_payload(buf: &[u8]) -> io::Result<Early> {
-    let n = buf.len().min(EARLY_MAGIC.len());
-    if buf[..n] != EARLY_MAGIC[..n] {
-        return Ok(Early::None);
-    }
-    if buf.len() < 9 {
-        return Ok(Early::NeedMore);
-    }
-    let len = u32::from_be_bytes([buf[5], buf[6], buf[7], buf[8]]) as usize;
-    if len > MAX_EARLY_PAYLOAD {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "early payload too large",
-        ));
-    }
-    if buf.len() < 9 + len {
-        return Ok(Early::NeedMore);
-    }
-    Ok(Early::Payload {
-        json: buf[9..9 + len].to_vec(),
-        len: 9 + len,
-    })
-}
-
 /// Fetches the control server's Noise public key from `/key`.
 pub fn fetch_server_key(dialer: &dyn Dialer, url: &ControlUrl) -> io::Result<[u8; 32]> {
     let mut conn = if url.https {
@@ -306,7 +242,7 @@ pub trait Chunks {
 
 /// The body of an HTTP/2 response.
 pub struct H2Body {
-    h2: H2Conn,
+    h2: ControlIo,
     id: u32,
 }
 
@@ -442,6 +378,163 @@ impl<S: Chunks> io::Read for MessageReader<'_, S> {
     }
 }
 
+/// A [`ControlConn`] over a blocking connection.
+pub struct ControlIo {
+    conn: Box<dyn Conn>,
+    cc: ControlConn,
+}
+
+fn io_error(e: controlconn::Error) -> io::Error {
+    use crate::controlbase::Error as N;
+    let kind = match &e {
+        controlconn::Error::Noise(N::UpgradeFailed(..)) => io::ErrorKind::ConnectionRefused,
+        controlconn::Error::Noise(N::Rejected(_) | N::ResponseAuth) => {
+            io::ErrorKind::PermissionDenied
+        }
+        controlconn::Error::Noise(N::Server(_)) => io::ErrorKind::Other,
+        controlconn::Error::H2(h2::Error::Goaway(_)) => io::ErrorKind::ConnectionAborted,
+        controlconn::Error::H2(h2::Error::StreamReset(_)) => io::ErrorKind::ConnectionReset,
+        controlconn::Error::H2(h2::Error::UnknownStream) => io::ErrorKind::NotFound,
+        controlconn::Error::H2(h2::Error::EndedWithoutHeaders) => io::ErrorKind::UnexpectedEof,
+        _ => io::ErrorKind::InvalidData,
+    };
+    io::Error::new(kind, e)
+}
+
+impl ControlIo {
+    /// Runs the upgrade and the handshake on `conn`.
+    pub fn open(conn: Box<dyn Conn>, cc: ControlConn) -> io::Result<Self> {
+        let mut io = ControlIo { conn, cc };
+        io.flush()?;
+        let deadline = Instant::now() + REQUEST_TIMEOUT;
+        while !io.cc.is_ready() {
+            io.process(deadline.saturating_duration_since(Instant::now()))?;
+        }
+        io.flush()?;
+        Ok(io)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        if self.cc.has_output() {
+            self.conn.write_all(&self.cc.take_output())?;
+            self.conn.flush()?;
+        }
+        Ok(())
+    }
+
+    /// Reads once from the connection, blocking at most `timeout`, and
+    /// processes what came.
+    fn process(&mut self, timeout: Duration) -> io::Result<()> {
+        self.conn
+            .set_read_timeout(Some(timeout.max(Duration::from_millis(10))))?;
+        let want = self.cc.wanted(2048);
+        let result = self.conn.read(self.cc.read_buffer(want));
+        let n = match result {
+            Ok(0) => {
+                let _ = self.cc.received(0);
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "control connection closed",
+                ));
+            }
+            Ok(n) => n,
+            Err(e) => {
+                let _ = self.cc.received(0);
+                if is_timeout(&e) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        "control read timeout",
+                    ));
+                }
+                return Err(e);
+            }
+        };
+        self.cc.received(n).map_err(io_error)?;
+        self.flush()
+    }
+
+    /// Sends a complete request and returns the stream id.
+    pub fn request(
+        &mut self,
+        method: &str,
+        path: &str,
+        headers: &[(&str, &str)],
+        body: &[u8],
+    ) -> io::Result<u32> {
+        let id = self
+            .cc
+            .request(method, path, headers, body)
+            .map_err(io_error)?;
+        self.flush()?;
+        while self.cc.body_unsent(id) {
+            // Wait for WINDOW_UPDATE.
+            self.process(REQUEST_TIMEOUT)?;
+            self.cc.status(id).map_err(io_error)?;
+        }
+        Ok(id)
+    }
+
+    /// Waits for the response headers of `id` and returns the status code.
+    pub fn response_status(&mut self, id: u32, timeout: Duration) -> io::Result<u16> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if let Some(st) = self.cc.status(id).map_err(io_error)? {
+                return Ok(st);
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "timeout waiting for response headers",
+                ));
+            }
+            self.process(left)?;
+        }
+    }
+
+    /// Returns the next available body bytes, `Ok(None)` at end of stream.
+    /// Blocks up to `timeout` for new data.
+    pub fn read_body(&mut self, id: u32, timeout: Duration) -> io::Result<Option<Vec<u8>>> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            match self.cc.take_body(id).map_err(io_error)? {
+                Body::Data(d) => return Ok(Some(d)),
+                Body::End => return Ok(None),
+                Body::Pending => {}
+            }
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "timeout waiting for body",
+                ));
+            }
+            self.process(left)?;
+        }
+    }
+
+    /// Reads the whole body.
+    pub fn read_full_body(
+        &mut self,
+        id: u32,
+        timeout: Duration,
+        max: usize,
+    ) -> io::Result<Vec<u8>> {
+        let mut out = Vec::new();
+        while let Some(chunk) = self.read_body(id, timeout)? {
+            out.extend_from_slice(&chunk);
+            if out.len() > max {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "response body too large",
+                ));
+            }
+        }
+        self.cc.forget_stream(id);
+        Ok(out)
+    }
+}
+
 /// Builds the `Hostinfo` we advertise.
 pub fn hostinfo(hostname: &str, version: &str, preferred_derp: i32) -> Hostinfo {
     Hostinfo {
@@ -469,25 +562,6 @@ pub fn hostinfo(hostname: &str, version: &str, preferred_derp: i32) -> Hostinfo 
 
 #[cfg(test)]
 mod tests {
-    #[test]
-    fn early_payload_or_http2() {
-        assert_eq!(early_payload(b"").unwrap(), Early::NeedMore);
-        assert_eq!(early_payload(b"\xff\xff").unwrap(), Early::NeedMore);
-        // The HTTP/2 preface starts with "PRI".
-        assert_eq!(early_payload(b"PRI * HTTP/2.0").unwrap(), Early::None);
-        let mut buf = b"\xff\xff\xffTS\x00\x00\x00\x02{}".to_vec();
-        assert_eq!(early_payload(&buf[..10]).unwrap(), Early::NeedMore);
-        buf.extend_from_slice(b"PRI");
-        assert_eq!(
-            early_payload(&buf).unwrap(),
-            Early::Payload {
-                json: b"{}".to_vec(),
-                len: 11
-            }
-        );
-        assert!(early_payload(b"\xff\xff\xffTS\x7f\x00\x00\x00").is_err());
-    }
-
     use super::*;
 
     /// A map stream fed from prepared pieces; `None` is a timeout.

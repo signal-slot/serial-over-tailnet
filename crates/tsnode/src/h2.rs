@@ -4,16 +4,13 @@
 //!
 //! [`H2Session`] is the protocol without I/O: frames, flow control and
 //! headers; bytes go in with [`H2Session::feed`] and come out of
-//! [`H2Session::take_output`]. [`H2Conn`] runs a session over a blocking
-//! [`Conn`].
+//! [`H2Session::take_output`]. [`crate::controlconn`] runs it inside the
+//! Noise records of a control connection.
 
 use crate::hpack;
-use crate::net::{is_timeout, Conn};
 use alloc::collections::BTreeMap;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use std::io::{self, Read, Write};
-use std::time::{Duration, Instant};
 
 const PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
@@ -521,163 +518,6 @@ impl H2Session {
                 );
                 s.recv_consumed = 0;
             }
-        }
-    }
-}
-
-fn io_error(e: Error) -> io::Error {
-    let kind = match e {
-        Error::Goaway(_) => io::ErrorKind::ConnectionAborted,
-        Error::StreamReset(_) => io::ErrorKind::ConnectionReset,
-        Error::UnknownStream => io::ErrorKind::NotFound,
-        Error::EndedWithoutHeaders => io::ErrorKind::UnexpectedEof,
-        _ => io::ErrorKind::InvalidData,
-    };
-    io::Error::new(kind, e)
-}
-
-/// An [`H2Session`] over a blocking connection.
-pub struct H2Conn {
-    conn: Box<dyn Conn>,
-    session: H2Session,
-}
-
-impl H2Conn {
-    /// Sends the client preface and initial settings. Does not wait for the
-    /// server's settings; they are processed as frames arrive.
-    pub fn new(conn: Box<dyn Conn>, authority: &str) -> io::Result<Self> {
-        Self::with_prefix(conn, authority, Vec::new())
-    }
-
-    /// Like `new`, but `prefix` holds bytes already read from `conn` that
-    /// belong to the HTTP/2 stream.
-    pub fn with_prefix(conn: Box<dyn Conn>, authority: &str, prefix: Vec<u8>) -> io::Result<Self> {
-        let mut c = H2Conn {
-            conn,
-            session: H2Session::new(authority, prefix),
-        };
-        // Frames that came with the prefix.
-        c.session.feed(&[]).map_err(io_error)?;
-        c.flush()?;
-        Ok(c)
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        if self.session.has_output() {
-            self.conn.write_all(&self.session.take_output())?;
-            self.conn.flush()?;
-        }
-        Ok(())
-    }
-
-    /// Sends a complete request and returns the stream id.
-    pub fn request(
-        &mut self,
-        method: &str,
-        path: &str,
-        headers: &[(&str, &str)],
-        body: &[u8],
-    ) -> io::Result<u32> {
-        let id = self
-            .session
-            .request(method, path, headers, body)
-            .map_err(io_error)?;
-        self.flush()?;
-        while self.session.body_unsent(id) {
-            // Wait for WINDOW_UPDATE.
-            self.process(Duration::from_secs(30))?;
-            self.session.status(id).map_err(io_error)?;
-        }
-        Ok(id)
-    }
-
-    /// Waits for the response headers of `id` and returns the status code.
-    pub fn response_status(&mut self, id: u32, timeout: Duration) -> io::Result<u16> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            if let Some(st) = self.session.status(id).map_err(io_error)? {
-                return Ok(st);
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "timeout waiting for response headers",
-                ));
-            }
-            self.process(deadline - now)?;
-        }
-    }
-
-    pub fn response_header(&self, id: u32, name: &str) -> Option<&str> {
-        self.session.response_header(id, name)
-    }
-
-    /// Returns the next available body bytes, `Ok(None)` at end of stream.
-    /// Blocks up to `timeout` for new data.
-    pub fn read_body(&mut self, id: u32, timeout: Duration) -> io::Result<Option<Vec<u8>>> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            match self.session.take_body(id).map_err(io_error)? {
-                Body::Data(d) => return Ok(Some(d)),
-                Body::End => return Ok(None),
-                Body::Pending => {}
-            }
-            let now = Instant::now();
-            if now >= deadline {
-                return Err(io::Error::new(
-                    io::ErrorKind::TimedOut,
-                    "timeout waiting for body",
-                ));
-            }
-            self.process(deadline - now)?;
-        }
-    }
-
-    /// Reads the whole body.
-    pub fn read_full_body(
-        &mut self,
-        id: u32,
-        timeout: Duration,
-        max: usize,
-    ) -> io::Result<Vec<u8>> {
-        let mut out = Vec::new();
-        while let Some(chunk) = self.read_body(id, timeout)? {
-            out.extend_from_slice(&chunk);
-            if out.len() > max {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "response body too large",
-                ));
-            }
-        }
-        self.session.forget_stream(id);
-        Ok(out)
-    }
-
-    pub fn forget_stream(&mut self, id: u32) {
-        self.session.forget_stream(id);
-    }
-
-    /// Reads once from the connection, blocking at most `timeout`, and
-    /// processes what came.
-    fn process(&mut self, timeout: Duration) -> io::Result<()> {
-        self.conn
-            .set_read_timeout(Some(timeout.max(Duration::from_millis(10))))?;
-        let mut tmp = [0u8; 2048];
-        match self.conn.read(&mut tmp) {
-            Ok(0) => Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "h2 connection closed",
-            )),
-            Ok(n) => {
-                self.session.feed(&tmp[..n]).map_err(io_error)?;
-                self.flush()
-            }
-            Err(e) if is_timeout(&e) => {
-                Err(io::Error::new(io::ErrorKind::TimedOut, "h2 read timeout"))
-            }
-            Err(e) => Err(e),
         }
     }
 }
