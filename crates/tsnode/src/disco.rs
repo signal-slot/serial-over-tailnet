@@ -2,6 +2,7 @@
 //! sealed with NaCl box between disco keys.
 
 use crate::crypto::{nacl_box_open, nacl_box_seal, random_array, CryptoError};
+use alloc::vec::Vec;
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 /// 6-byte magic: "TS💬".

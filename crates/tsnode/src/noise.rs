@@ -2,6 +2,7 @@
 //! ts2021 control handshake (`Noise_IK`) and WireGuard (`Noise_IKpsk2`).
 
 use crate::crypto::{aead_decrypt, aead_encrypt, blake2s, hkdf, x25519, CryptoError};
+use alloc::vec::Vec;
 
 #[derive(Clone)]
 pub struct SymmetricState {

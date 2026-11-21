@@ -3,6 +3,7 @@
 //! Everything here is a thin, allocation-light wrapper over pure-Rust crates so
 //! it builds unchanged for `xtensa-esp32s3-espidf`.
 
+use alloc::vec::Vec;
 use blake2::digest::consts::U16;
 use blake2::digest::{KeyInit, Mac};
 use blake2::{Blake2s256, Blake2sMac, Digest};

@@ -10,7 +10,7 @@
 //! ([`MagicCore::poll_event`]: decrypted IP packets, DERP connections to open
 //! or close, a new public endpoint).
 //!
-//! [`MagicSock`] (`std`) drives it with a UDP socket and one thread per DERP
+//! `MagicSock` (`std`) drives it with a UDP socket and one thread per DERP
 //! connection.
 
 #[cfg(feature = "std")]

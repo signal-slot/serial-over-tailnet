@@ -13,7 +13,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+          # A target without std (the Raspberry Pi Pico 2's): tsnode's
+          # state machines must build there.
+          targets: thumbv8m.main-none-eabihf
       - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets -- -D warnings
+      - run: cargo clippy -p tsnode --no-default-features --target thumbv8m.main-none-eabihf -- -D warnings
       - run: cargo test --workspace

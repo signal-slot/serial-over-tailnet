@@ -13,9 +13,10 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tsnode::control::{hostinfo, ControlClient};
+use tsnode::control::ControlClient;
 use tsnode::keys::{fmt_node_pub, KeyPair};
 use tsnode::node::{Node, NodeConfig, NodeState, Store};
+use tsnode::types::hostinfo;
 use tsnode::types::*;
 
 fn main() {

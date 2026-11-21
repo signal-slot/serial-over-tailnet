@@ -1,6 +1,10 @@
 //! JSON types exchanged with the Tailscale control plane (subset of `tailcfg`).
 
+use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::format;
+use alloc::string::String;
+use alloc::vec::Vec;
 use core::net::{IpAddr, Ipv4Addr, SocketAddr};
 use serde::{Deserialize, Serialize};
 
@@ -170,6 +174,8 @@ pub(crate) fn parse_cidr(s: &str) -> Option<(IpAddr, u8)> {
 /// `null` is taken as absent.
 mod de {
     use crate::keys::{parse_prefixed, DISCO_PUB_PREFIX, NODE_PUB_PREFIX};
+    use alloc::string::String;
+    use alloc::vec::Vec;
     use core::net::{IpAddr, Ipv4Addr, SocketAddr};
     use serde::de::{SeqAccess, Visitor};
     use serde::{Deserialize, Deserializer};
@@ -362,6 +368,31 @@ pub struct MapResponse {
     pub domain: String,
     pub health: Option<Vec<String>>,
     pub control_time: Option<String>,
+}
+
+/// Builds the `Hostinfo` we advertise.
+pub fn hostinfo(hostname: &str, version: &str, preferred_derp: i32) -> Hostinfo {
+    Hostinfo {
+        ipn_version: format!("tsnode-{version}"),
+        os: "linux".into(),
+        os_version: "esp-idf".into(),
+        distro: "esp-idf".into(),
+        device_model: "ESP32-S3".into(),
+        hostname: hostname.into(),
+        go_arch: "xtensa".into(),
+        machine: "esp32s3".into(),
+        userspace: true,
+        net_info: if preferred_derp != 0 {
+            Some(NetInfo {
+                preferred_derp,
+                working_udp: Some(true),
+                link_type: "wifi".into(),
+                ..Default::default()
+            })
+        } else {
+            None
+        },
+    }
 }
 
 #[cfg(test)]

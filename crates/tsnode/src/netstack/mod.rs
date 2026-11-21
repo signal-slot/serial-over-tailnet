@@ -7,8 +7,8 @@
 //! takes out the packets to send ([`NetCore::poll_transmit`]) and asks when
 //! to poll again ([`NetCore::poll_delay`]).
 //!
-//! [`NetStack`] (`std`) runs it on a thread and offers blocking
-//! [`TcpListener`] and [`TcpStream`] handles.
+//! `NetStack` (`std`) runs it on a thread and offers blocking
+//! `TcpListener` and `TcpStream` handles.
 
 #[cfg(feature = "std")]
 mod driver;

@@ -6,15 +6,14 @@
 //! back, and carries out the [`Action`]s it asks for (store a value, set the
 //! stack's addresses). It configures the [`MagicCore`] it is handed.
 //!
-//! [`Node`] (`std`) runs it on a control thread together with a
-//! [`crate::magicsock::MagicSock`] and a [`crate::netstack::NetStack`].
+//! `Node` (`std`) runs it on a control thread together with a `MagicSock`
+//! and a `NetStack`.
 
 #[cfg(feature = "std")]
 mod driver;
 #[cfg(feature = "std")]
 pub use driver::{Node, NodeConfig, Store};
 
-use crate::control::hostinfo;
 use crate::filter::Filter;
 use crate::keys::{fmt_disco_pub, fmt_node_pub, KeyPair};
 use crate::magicsock::{MagicCore, PeerStatus};

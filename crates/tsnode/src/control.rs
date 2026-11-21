@@ -535,31 +535,6 @@ impl ControlIo {
     }
 }
 
-/// Builds the `Hostinfo` we advertise.
-pub fn hostinfo(hostname: &str, version: &str, preferred_derp: i32) -> Hostinfo {
-    Hostinfo {
-        ipn_version: format!("tsnode-{version}"),
-        os: "linux".into(),
-        os_version: "esp-idf".into(),
-        distro: "esp-idf".into(),
-        device_model: "ESP32-S3".into(),
-        hostname: hostname.into(),
-        go_arch: "xtensa".into(),
-        machine: "esp32s3".into(),
-        userspace: true,
-        net_info: if preferred_derp != 0 {
-            Some(NetInfo {
-                preferred_derp,
-                working_udp: Some(true),
-                link_type: "wifi".into(),
-                ..Default::default()
-            })
-        } else {
-            None
-        },
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2,6 +2,8 @@
 //! `discokey:`, `privkey:`).
 
 use crate::crypto::{x25519_generate, x25519_public};
+use alloc::format;
+use alloc::string::String;
 use core::fmt;
 
 pub const MACHINE_PUB_PREFIX: &str = "mkey:";

@@ -8,6 +8,8 @@ use crate::crypto::{
 use crate::keys::KeyPair;
 use crate::noise::SymmetricState;
 use crate::time::{Instant, WallClock};
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::time::Duration;
 
 pub const CONSTRUCTION: &[u8] = b"Noise_IKpsk2_25519_ChaChaPoly_BLAKE2s";

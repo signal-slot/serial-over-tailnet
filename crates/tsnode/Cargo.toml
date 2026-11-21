@@ -8,15 +8,17 @@ description = "Minimal userspace Tailscale node: ts2021 control client, WireGuar
 [dependencies]
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 chacha20poly1305 = "0.10"
-blake2 = "0.10"
-crypto_box = { version = "0.9", features = ["std"] }
-getrandom = "0.2"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-base64 = "0.22"
-hex = "0.4"
+blake2 = { version = "0.10", default-features = false }
+crypto_box = "0.9"
+# Targets without an OS (no default source) register one with
+# `getrandom::register_custom_getrandom!`.
+getrandom = { version = "0.2", features = ["custom"] }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+base64 = { version = "0.22", default-features = false, features = ["alloc"] }
+hex = { version = "0.4", default-features = false, features = ["alloc"] }
 log = "0.4"
-smoltcp = { version = "0.12", default-features = false, features = ["std", "log", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-tcp"] }
+smoltcp = { version = "0.12", default-features = false, features = ["alloc", "log", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-tcp"] }
 
 [dev-dependencies]
 # Only to check that our HPACK decoder reads what another encoder writes.
@@ -26,6 +28,6 @@ env_logger = "0.11"
 [features]
 default = ["std"]
 # The threads, sockets and system clock that drive the state machines.
-std = []
+std = ["blake2/std", "crypto_box/std", "serde/std", "serde_json/std", "base64/std", "hex/std", "smoltcp/std"]
 # Smaller TCP buffers, for a device with a few hundred kilobytes of RAM in all.
 small-ram = []

@@ -1,6 +1,10 @@
 //! Tiny HTTP/1.1 helpers: enough to issue `GET /key`, to perform the ts2021 and
 //! DERP `Upgrade:` requests and to parse the response head.
 
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+#[cfg(feature = "std")]
 use std::io::{self, Read, Write};
 
 #[derive(Debug, Default)]
@@ -73,6 +77,7 @@ pub fn parse_response_head(buf: &[u8]) -> Result<Option<ResponseHead>, HeadError
 }
 
 /// Reads an HTTP/1.x response head, byte-wise buffered, from `r`.
+#[cfg(feature = "std")]
 pub fn read_response_head(r: &mut dyn Read) -> io::Result<ResponseHead> {
     let mut buf = Vec::with_capacity(512);
     let mut tmp = [0u8; 256];
@@ -99,6 +104,7 @@ fn find_head_end(buf: &[u8]) -> Option<usize> {
 
 /// Reads a body given a parsed head: honours `Content-Length`, chunked
 /// encoding, or reads to EOF.
+#[cfg(feature = "std")]
 pub fn read_body(r: &mut dyn Read, head: &ResponseHead, max: usize) -> io::Result<Vec<u8>> {
     let mut body = head.leftover.clone();
     if let Some(len) = head
@@ -156,6 +162,7 @@ pub fn read_body(r: &mut dyn Read, head: &ResponseHead, max: usize) -> io::Resul
     Ok(body)
 }
 
+#[cfg(feature = "std")]
 fn dechunk(raw: &[u8]) -> io::Result<Vec<u8>> {
     let mut out = Vec::new();
     let mut pos = 0;
@@ -197,6 +204,7 @@ pub fn request(method: &str, path: &str, host: &str, extra_headers: &[(&str, &st
 }
 
 /// Writes a simple request with no body.
+#[cfg(feature = "std")]
 pub fn write_request(
     w: &mut dyn Write,
     method: &str,
@@ -209,6 +217,7 @@ pub fn write_request(
 }
 
 /// Performs `GET path` on an already-connected stream and returns the body.
+#[cfg(feature = "std")]
 pub fn get(
     conn: &mut dyn Read,
     w: &mut dyn Write,
