@@ -1,29 +1,12 @@
-//! A tiny userspace TCP/IP stack on top of smoltcp that terminates TCP on the
-//! node's tailnet addresses. IP packets flow in from WireGuard and out to it.
+//! Runs [`NetCore`] on a thread for `std`, with blocking [`TcpListener`]
+//! and [`TcpStream`] handles. Each connection keeps its own byte queues
+//! under its own lock, so readers and writers never wait for the stack.
 
-use log::{debug, warn};
-use smoltcp::iface::{Config, Interface, SocketHandle, SocketSet};
-use smoltcp::phy::{self, Device, DeviceCapabilities, Medium};
-use smoltcp::socket::tcp;
-use smoltcp::time::Instant as SmolInstant;
-use smoltcp::wire::{HardwareAddress, IpAddress, IpCidr, IpEndpoint, IpListenEndpoint};
-use std::collections::VecDeque;
+use super::*;
 use std::io;
-use std::net::{IpAddr, SocketAddr};
 use std::sync::{Arc, Condvar, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-// Per socket (a listener holds one ready), so they count on a small device.
-const RX_BUF: usize = if cfg!(feature = "small-ram") {
-    2 * 1024
-} else {
-    8 * 1024
-};
-const TX_BUF: usize = if cfg!(feature = "small-ram") {
-    2 * 1024
-} else {
-    8 * 1024
-};
 const USER_TX_LIMIT: usize = if cfg!(feature = "small-ram") {
     8 * 1024
 } else {
@@ -36,52 +19,8 @@ const USER_RX_LIMIT: usize = if cfg!(feature = "small-ram") {
 } else {
     16 * 1024
 };
-/// A peer that stops acknowledging (sleeping laptop, vanished NAT mapping)
-/// is dropped after this long so the bridge becomes free again.
-const DEAD_PEER_TIMEOUT: Duration = Duration::from_secs(120);
-const MTU: usize = 1280;
-
-/// Queues between the poll loop and the WireGuard side.
-struct TunDevice {
-    rx: VecDeque<Vec<u8>>,
-    tx: Vec<Vec<u8>>,
-}
-
-struct RxTok(Vec<u8>);
-struct TxTok<'a>(&'a mut Vec<Vec<u8>>);
-
-impl phy::RxToken for RxTok {
-    fn consume<R, F: FnOnce(&[u8]) -> R>(self, f: F) -> R {
-        f(&self.0)
-    }
-}
-impl phy::TxToken for TxTok<'_> {
-    fn consume<R, F: FnOnce(&mut [u8]) -> R>(self, len: usize, f: F) -> R {
-        let mut buf = vec![0u8; len];
-        let r = f(&mut buf);
-        self.0.push(buf);
-        r
-    }
-}
-
-impl Device for TunDevice {
-    type RxToken<'a> = RxTok;
-    type TxToken<'a> = TxTok<'a>;
-
-    fn receive(&mut self, _t: SmolInstant) -> Option<(Self::RxToken<'_>, Self::TxToken<'_>)> {
-        let pkt = self.rx.pop_front()?;
-        Some((RxTok(pkt), TxTok(&mut self.tx)))
-    }
-    fn transmit(&mut self, _t: SmolInstant) -> Option<Self::TxToken<'_>> {
-        Some(TxTok(&mut self.tx))
-    }
-    fn capabilities(&self) -> DeviceCapabilities {
-        let mut c = DeviceCapabilities::default();
-        c.medium = Medium::Ip;
-        c.max_transmission_unit = MTU;
-        c
-    }
-}
+/// Longest sleep of the poll thread when nothing wakes it.
+const MAX_POLL_DELAY: Duration = Duration::from_millis(500);
 
 struct ConnState {
     rx: VecDeque<u8>,
@@ -121,8 +60,8 @@ struct ListenerShared {
 
 struct State {
     inbound: VecDeque<Vec<u8>>,
-    addrs: Vec<IpCidr>,
-    addrs_dirty: bool,
+    /// Addresses to set at the next poll.
+    addrs: Option<Vec<(IpAddr, u8)>>,
     new_listeners: Vec<Arc<ListenerShared>>,
     new_connects: Vec<(SocketAddr, Arc<ConnShared>)>,
     shutdown: bool,
@@ -151,8 +90,7 @@ impl NetStack {
         let inner = Arc::new(Inner {
             state: Mutex::new(State {
                 inbound: VecDeque::new(),
-                addrs: Vec::new(),
-                addrs_dirty: false,
+                addrs: None,
                 new_listeners: Vec::new(),
                 new_connects: Vec::new(),
                 shutdown: false,
@@ -174,14 +112,7 @@ impl NetStack {
     /// Sets the node's tailnet addresses (with their on-link prefixes).
     pub fn set_addresses(&self, addrs: Vec<(IpAddr, u8)>) {
         let mut st = self.inner.state.lock().unwrap();
-        st.addrs = addrs
-            .into_iter()
-            .map(|(ip, prefix)| match ip {
-                IpAddr::V4(v4) => IpCidr::new(IpAddress::Ipv4(v4), prefix),
-                IpAddr::V6(v6) => IpCidr::new(IpAddress::Ipv6(v6), prefix),
-            })
-            .collect();
-        st.addrs_dirty = true;
+        st.addrs = Some(addrs);
         st.wake = true;
         self.inner.cv.notify_all();
     }
@@ -374,219 +305,105 @@ impl Drop for TcpStream {
     }
 }
 
-struct ConnEntry {
-    handle: SocketHandle,
-    shared: Arc<ConnShared>,
-}
-
-struct ListenerEntry {
-    shared: Arc<ListenerShared>,
-    handle: SocketHandle,
-}
-
-fn new_tcp_socket() -> tcp::Socket<'static> {
-    let mut s = tcp::Socket::new(
-        tcp::SocketBuffer::new(vec![0; RX_BUF]),
-        tcp::SocketBuffer::new(vec![0; TX_BUF]),
-    );
-    s.set_nagle_enabled(false);
-    s.set_keep_alive(Some(smoltcp::time::Duration::from_secs(30)));
-    s.set_timeout(Some(smoltcp::time::Duration::from_secs(
-        DEAD_PEER_TIMEOUT.as_secs(),
-    )));
-    s
-}
-
-fn endpoint_to_std(ep: IpEndpoint) -> SocketAddr {
-    let ip = match ep.addr {
-        IpAddress::Ipv4(a) => IpAddr::V4(a),
-        IpAddress::Ipv6(a) => IpAddr::V6(a),
-    };
-    SocketAddr::new(ip, ep.port)
-}
-
 fn poll_loop(inner: Arc<Inner>, outbound: Box<dyn Fn(Vec<u8>) + Send + Sync>) {
-    let mut device = TunDevice {
-        rx: VecDeque::new(),
-        tx: Vec::new(),
-    };
-    let mut config = Config::new(HardwareAddress::Ip);
-    config.random_seed = u64::from_le_bytes(crate::crypto::random_array());
-    let mut iface = Interface::new(config, &mut device, SmolInstant::now());
-    let mut sockets = SocketSet::new(vec![]);
-    let mut listeners: Vec<ListenerEntry> = Vec::new();
-    let mut conns: Vec<ConnEntry> = Vec::new();
+    let seed = u64::from_le_bytes(crate::crypto::random_array());
+    let mut core = NetCore::new(seed, Instant::now());
+    let mut listeners: Vec<(Arc<ListenerShared>, ListenerId)> = Vec::new();
+    let mut conns: Vec<(ConnId, Arc<ConnShared>)> = Vec::new();
 
     loop {
         // Pull work from the shared state.
-        {
+        let connects = {
             let mut st = inner.state.lock().unwrap();
             if st.shutdown {
                 break;
             }
             st.wake = false;
             while let Some(p) = st.inbound.pop_front() {
-                device.rx.push_back(p);
+                core.receive(p);
             }
-            if st.addrs_dirty {
-                st.addrs_dirty = false;
-                let addrs = st.addrs.clone();
-                iface.update_ip_addrs(|a| {
-                    a.clear();
-                    for cidr in addrs.iter().take(a.capacity()) {
-                        let _ = a.push(*cidr);
-                    }
-                });
-                for cidr in &addrs {
-                    match cidr.address() {
-                        IpAddress::Ipv4(v4) => {
-                            let _ = iface.routes_mut().add_default_ipv4_route(v4);
-                        }
-                        IpAddress::Ipv6(v6) => {
-                            let _ = iface.routes_mut().add_default_ipv6_route(v6);
-                        }
-                    }
-                }
-                debug!("netstack: addresses {:?}", addrs);
+            if let Some(addrs) = st.addrs.take() {
+                core.set_addresses(&addrs);
             }
             for l in st.new_listeners.drain(..) {
-                let mut s = new_tcp_socket();
-                if let Err(e) = s.listen(IpListenEndpoint {
-                    addr: None,
-                    port: l.port,
-                }) {
-                    warn!("netstack: listen on {} failed: {e:?}", l.port);
-                    continue;
+                if let Some(id) = core.listen(l.port) {
+                    listeners.push((l, id));
                 }
-                let handle = sockets.add(s);
-                listeners.push(ListenerEntry { shared: l, handle });
             }
-            let connects = std::mem::take(&mut st.new_connects);
-            drop(st);
-            for (remote, shared) in connects {
-                let mut s = new_tcp_socket();
-                let local_port =
-                    49152 + (u16::from_le_bytes(crate::crypto::random_array()) % 16000);
-                let remote_ep = IpEndpoint::new(
-                    match remote.ip() {
-                        IpAddr::V4(v4) => IpAddress::Ipv4(v4),
-                        IpAddr::V6(v6) => IpAddress::Ipv6(v6),
+            std::mem::take(&mut st.new_connects)
+        };
+        for (remote, shared) in connects {
+            let local_port = 49152 + (u16::from_le_bytes(crate::crypto::random_array()) % 16000);
+            match core.connect(remote, local_port) {
+                Some(id) => conns.push((id, shared)),
+                None => {
+                    shared.m.lock().unwrap().dead = true;
+                    shared.cv.notify_all();
+                }
+            }
+        }
+
+        let now = Instant::now();
+        core.poll(now);
+
+        // Listeners: closed ones go, accepted connections get a stream.
+        listeners.retain(|(shared, id)| {
+            if *shared.closed.lock().unwrap() {
+                core.unlisten(*id);
+                return false;
+            }
+            while let Some((conn, remote)) = core.accept(*id) {
+                let cs = Arc::new(ConnShared {
+                    m: Mutex::new(ConnState::new(remote)),
+                    cv: Condvar::new(),
+                });
+                conns.push((conn, cs.clone()));
+                let stream = TcpStream {
+                    shared: cs,
+                    stack: NetStack {
+                        inner: inner.clone(),
                     },
-                    remote.port(),
-                );
-                match s.connect(iface.context(), remote_ep, local_port) {
-                    Ok(()) => {
-                        let handle = sockets.add(s);
-                        conns.push(ConnEntry { handle, shared });
-                    }
-                    Err(e) => {
-                        warn!("netstack: connect to {remote} failed: {e:?}");
-                        let mut c = shared.m.lock().unwrap();
-                        c.dead = true;
-                        shared.cv.notify_all();
-                    }
-                }
+                };
+                shared.queue.lock().unwrap().push_back(stream);
+                shared.cv.notify_all();
             }
-        }
+            true
+        });
 
-        let now = SmolInstant::now();
-        let _ = iface.poll(now, &mut device, &mut sockets);
-
-        // Listeners: a socket that left the LISTEN state has a connection.
-        let mut i = 0;
-        while i < listeners.len() {
-            let closed = *listeners[i].shared.closed.lock().unwrap();
-            let sock = sockets.get_mut::<tcp::Socket>(listeners[i].handle);
-            if closed {
-                sock.abort();
-                sockets.remove(listeners[i].handle);
-                listeners.remove(i);
-                continue;
-            }
-            match sock.state() {
-                tcp::State::Listen => {}
-                tcp::State::Closed => {
-                    let _ = sock.listen(IpListenEndpoint {
-                        addr: None,
-                        port: listeners[i].shared.port,
-                    });
-                }
-                _ => {
-                    let remote = sock
-                        .remote_endpoint()
-                        .map(endpoint_to_std)
-                        .unwrap_or(SocketAddr::from(([0, 0, 0, 0], 0)));
-                    let shared = Arc::new(ConnShared {
-                        m: Mutex::new(ConnState::new(remote)),
-                        cv: Condvar::new(),
-                    });
-                    conns.push(ConnEntry {
-                        handle: listeners[i].handle,
-                        shared: shared.clone(),
-                    });
-                    let stream = TcpStream {
-                        shared,
-                        stack: NetStack {
-                            inner: inner.clone(),
-                        },
-                    };
-                    {
-                        let mut q = listeners[i].shared.queue.lock().unwrap();
-                        q.push_back(stream);
-                        listeners[i].shared.cv.notify_all();
-                    }
-                    // Replace the listening socket.
-                    let mut s = new_tcp_socket();
-                    let _ = s.listen(IpListenEndpoint {
-                        addr: None,
-                        port: listeners[i].shared.port,
-                    });
-                    listeners[i].handle = sockets.add(s);
-                }
-            }
-            i += 1;
-        }
-
-        // Connections.
-        let mut i = 0;
-        while i < conns.len() {
-            let sock = sockets.get_mut::<tcp::Socket>(conns[i].handle);
-            let shared = &conns[i].shared;
+        // Connections: move bytes between the sockets and the user queues.
+        conns.retain(|(id, shared)| {
+            let id = *id;
             let mut st = shared.m.lock().unwrap();
             let mut changed = false;
             let mut buf = [0u8; 1024];
-            while sock.can_recv() && st.rx.len() < USER_RX_LIMIT {
-                match sock.recv_slice(&mut buf) {
-                    Ok(n) if n > 0 => {
-                        st.rx.extend(&buf[..n]);
-                        changed = true;
-                    }
-                    _ => break,
+            while core.can_recv(id) && st.rx.len() < USER_RX_LIMIT {
+                let n = core.recv(id, &mut buf);
+                if n == 0 {
+                    break;
                 }
+                st.rx.extend(&buf[..n]);
+                changed = true;
             }
-            while sock.can_send() && !st.tx.is_empty() {
+            while core.can_send(id) && !st.tx.is_empty() {
                 let (a, _) = st.tx.as_slices();
-                let chunk_len = a.len().min(1024);
-                match sock.send_slice(&a[..chunk_len]) {
-                    Ok(n) if n > 0 => {
-                        st.tx.drain(..n);
-                        changed = true;
-                    }
-                    _ => break,
+                let n = core.send(id, &a[..a.len().min(1024)]);
+                if n == 0 {
+                    break;
                 }
+                st.tx.drain(..n);
+                changed = true;
             }
             if st.aborted {
-                sock.abort();
-            } else if st.local_closed && st.tx.is_empty() && sock.is_open() {
-                sock.close();
+                core.abort(id);
+            } else if st.local_closed && st.tx.is_empty() {
+                core.close(id);
             }
-            let connecting = matches!(sock.state(), tcp::State::SynSent | tcp::State::SynReceived);
-            if !sock.may_recv() && !st.peer_closed && !connecting {
+            let status = core.status(id);
+            if !status.may_recv && !st.peer_closed && !status.connecting {
                 st.peer_closed = true;
                 changed = true;
             }
-            let dead = matches!(sock.state(), tcp::State::Closed | tcp::State::TimeWait);
-            if dead {
+            if status.closed {
                 st.dead = true;
                 st.peer_closed = true;
                 changed = true;
@@ -595,23 +412,20 @@ fn poll_loop(inner: Arc<Inner>, outbound: Box<dyn Fn(Vec<u8>) + Send + Sync>) {
                 shared.cv.notify_all();
             }
             drop(st);
-            if dead {
-                sockets.remove(conns[i].handle);
-                conns.remove(i);
-                continue;
+            if status.closed {
+                core.remove(id);
             }
-            i += 1;
-        }
+            !status.closed
+        });
 
-        for pkt in device.tx.drain(..) {
+        while let Some(pkt) = core.poll_transmit() {
             outbound(pkt);
         }
 
-        let delay = iface
-            .poll_delay(now, &sockets)
-            .map(|d| Duration::from_micros(d.total_micros()))
-            .unwrap_or(Duration::from_millis(500))
-            .min(Duration::from_millis(500));
+        let delay = core
+            .poll_delay(now)
+            .unwrap_or(MAX_POLL_DELAY)
+            .min(MAX_POLL_DELAY);
         let st = inner.state.lock().unwrap();
         if !st.wake && !st.shutdown {
             let _ = inner.cv.wait_timeout(st, delay).unwrap();
