@@ -143,8 +143,9 @@ impl Wifi {
     /// Joins a known network, then serves the shell.
     pub async fn run(mut self) -> ! {
         if shell::saved_config().is_some() {
-            // A failure is shown by `status`.
-            let _ = self.reconnect().await;
+            if self.reconnect().await.is_ok() {
+                crate::control_probe(self.stack).await;
+            }
         } else {
             shell::set_wifi_state("not configured".into());
         }

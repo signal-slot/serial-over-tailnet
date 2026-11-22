@@ -41,3 +41,18 @@ fn fill(buf: &mut [u8]) -> Result<(), getrandom::Error> {
 }
 
 getrandom::register_custom_getrandom!(fill);
+
+/// getrandom 0.4's custom backend (the TLS provider uses that version).
+#[unsafe(no_mangle)]
+unsafe extern "Rust" fn __getrandom_v03_custom(
+    dest: *mut u8,
+    len: usize,
+) -> Result<(), getrandom04::Error> {
+    // SAFETY: getrandom passes a buffer of `len` bytes, possibly
+    // uninitialised; it is zeroed before it is used as a slice.
+    let buf = unsafe {
+        core::ptr::write_bytes(dest, 0, len);
+        core::slice::from_raw_parts_mut(dest, len)
+    };
+    fill(buf).map_err(|_| getrandom04::Error::UNSUPPORTED)
+}

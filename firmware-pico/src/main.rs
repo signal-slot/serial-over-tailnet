@@ -10,11 +10,14 @@
 
 extern crate alloc;
 
+mod clock;
 mod config;
 mod console;
+mod control;
 mod panic;
 mod rng;
 mod shell;
+mod tls;
 mod wifi;
 
 use core::mem::MaybeUninit;
@@ -52,6 +55,24 @@ bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => usb::InterruptHandler<USB>;
     TRNG_IRQ => trng::InterruptHandler<TRNG>;
 });
+
+/// The test of the control path until the node runs here: registers a
+/// throwaway key and logs the answer.
+pub async fn control_probe(stack: embassy_net::Stack<'static>) {
+    match control::probe(stack).await {
+        Ok(p) => info!(
+            "control: register OK (authorized {}, auth URL {}, error '{}')",
+            p.authorized,
+            if p.auth_url.is_empty() {
+                "none"
+            } else {
+                "given"
+            },
+            p.error
+        ),
+        Err(e) => warn!("control: probe failed: {e}"),
+    }
+}
 
 static mut CORE1_STACK: CoreStack<{ 32 * 1024 }> = CoreStack::new();
 

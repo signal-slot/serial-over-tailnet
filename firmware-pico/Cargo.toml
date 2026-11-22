@@ -32,6 +32,17 @@ log = "0.4"
 # tsnode draws its keys and nonces from getrandom; src/rng.rs feeds it from
 # the RP2350's TRNG.
 getrandom = { version = "0.2", features = ["custom"] }
+# The TLS provider draws from getrandom 0.4 (its custom backend is selected
+# in .cargo/config.toml); src/rng.rs feeds both.
+getrandom04 = { package = "getrandom", version = "0.4" }
+serde = { version = "1", default-features = false, features = ["derive", "alloc"] }
+serde_json = { version = "1", default-features = false, features = ["alloc"] }
+
+# TLS (the control server's /key is HTTPS only): rustls without std, with
+# RustCrypto's pure-Rust algorithms and Mozilla's root certificates.
+rustls = { version = "0.23", default-features = false }
+rustls-rustcrypto = { version = "0.1.0-pre.0", default-features = false, features = ["alloc", "zeroize"] }
+webpki-roots = "1"
 
 [profile.release]
 debug = 2
