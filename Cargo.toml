@@ -1,9 +1,10 @@
 [workspace]
 resolver = "2"
 members = ["crates/tsnode", "crates/adapter-core", "tools/hostnode"]
-# The firmware crate targets xtensa-esp32s3-espidf and carries its own toolchain
-# and .cargo/config; it is built separately from firmware/.
-exclude = ["firmware"]
+# The firmware crates target microcontrollers and carry their own toolchain and
+# .cargo/config: firmware/ (ESP32, ESP-IDF) and firmware-pico/ (Raspberry Pi
+# Pico 2 W, embassy) are built from their own directories.
+exclude = ["firmware", "firmware-pico"]
 
 [workspace.package]
 version = "0.1.0"

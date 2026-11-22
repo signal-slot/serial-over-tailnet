@@ -9,3 +9,6 @@ hostnode-state.json
 /firmware/managed_components
 /firmware/dependencies.lock
 firmware/dist/
+/firmware-pico/target
+# The Wi-Fi chip firmware the Pico 2 W build embeds (see its README).
+!/firmware-pico/cyw43-firmware/*.bin

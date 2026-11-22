@@ -1,0 +1,43 @@
+[package]
+name = "firmware-pico"
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+publish = false
+description = "serial-over-tailnet on the Raspberry Pi Pico 2 W (embassy, cyw43)"
+
+[dependencies]
+tsnode = { path = "../crates/tsnode", default-features = false }
+adapter-core = { path = "../crates/adapter-core" }
+
+# The executor comes from embassy-rp (its `executor-thread` feature).
+embassy-executor = "0.10"
+embassy-rp = { version = "0.10", features = ["rp235xa", "rt", "time-driver", "critical-section-impl", "binary-info", "unstable-pac", "executor-thread"] }
+embassy-time = "0.5"
+embassy-net = { version = "0.9", features = ["tcp", "udp", "dns", "dhcpv4", "medium-ethernet", "proto-ipv4", "log", "alloc"] }
+embassy-sync = "0.8"
+embassy-futures = "0.1"
+embassy-usb = "0.6"
+embedded-io-async = "0.7"
+cyw43 = { version = "0.7", features = ["log"] }
+cyw43-pio = "0.10"
+
+cortex-m = { version = "0.7", features = ["inline-asm"] }
+cortex-m-rt = "0.7"
+critical-section = "1"
+embedded-alloc = "0.7"
+static_cell = "2"
+portable-atomic = { version = "1", features = ["critical-section"] }
+log = "0.4"
+# tsnode draws its keys and nonces from getrandom; src/rng.rs feeds it from
+# the RP2350's TRNG.
+getrandom = { version = "0.2", features = ["custom"] }
+
+[profile.release]
+debug = 2
+lto = true
+opt-level = "s"
+codegen-units = 1
+
+[profile.dev]
+opt-level = "s"
