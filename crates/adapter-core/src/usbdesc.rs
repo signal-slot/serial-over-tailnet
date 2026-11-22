@@ -14,6 +14,8 @@
 //!   interface with bulk endpoints can also be a debugger or anything else
 //!   (the Raspberry Pi Debug Probe has CMSIS-DAP on interface 0).
 
+use alloc::vec::Vec;
+
 pub const CLASS_CDC: u8 = 0x02;
 pub const SUBCLASS_ACM: u8 = 0x02;
 pub const CLASS_CDC_DATA: u8 = 0x0a;

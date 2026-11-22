@@ -115,9 +115,9 @@ impl LineSettings {
     }
 }
 
-impl std::fmt::Display for LineSettings {
+impl core::fmt::Display for LineSettings {
     /// `115200 8N1`.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
             "{} {}{}{}",

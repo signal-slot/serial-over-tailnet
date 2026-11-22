@@ -21,6 +21,8 @@
 //! is always reported as none.
 
 use crate::usbserial::{LineSettings, Parity, StopBits};
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
 
 /// Telnet "interpret as command".
 pub const IAC: u8 = 255;
@@ -393,7 +395,7 @@ impl Session {
                 }
                 SE => {
                     if !self.sub_overflow {
-                        let sub = std::mem::take(&mut self.sub);
+                        let sub = core::mem::take(&mut self.sub);
                         self.subnegotiation(&sub, to_client, commands);
                         self.sub = sub;
                     }
@@ -928,7 +930,7 @@ mod tests {
         let mut h = Harness::new();
         h.feed(&PYSERIAL_OPEN);
         let mut input = vec![IAC, SB, OPT_COM_PORT, SIGNATURE];
-        input.extend(std::iter::repeat_n(b'x', MAX_SUBNEGOTIATION + 10));
+        input.extend(core::iter::repeat_n(b'x', MAX_SUBNEGOTIATION + 10));
         input.extend([IAC, SE]);
         assert!(h.feed(&input).is_empty());
         // IAC followed by something other than IAC or SE ends the

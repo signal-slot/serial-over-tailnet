@@ -2,7 +2,10 @@
 //! console. Platform-independent: I/O goes through [`Console`], device
 //! actions through [`Platform`], so the wizard is unit-tested on the host.
 
-use std::time::{Duration, Instant};
+use alloc::format;
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use core::time::Duration;
 
 /// Byte-oriented terminal.
 pub trait Console {
@@ -112,27 +115,25 @@ pub struct Shell<'a, C: Console, P: Platform> {
 
 /// Reads a line with minimal editing (backspace) and optional echo.
 /// Returns `None` if the console reports nothing for `idle_timeout`
-/// before any key was typed (used to keep UART0 quiet).
+/// before any key was typed (used to keep UART0 quiet). Time is counted in
+/// the console's read timeouts, so the shell needs no clock.
 pub fn read_line(
     console: &mut dyn Console,
     echo: bool,
     idle_timeout: Option<Duration>,
     swallow_lf: &mut bool,
 ) -> Option<String> {
+    const POLL: Duration = Duration::from_millis(500);
     let mut line: Vec<u8> = Vec::new();
-    let first_deadline = idle_timeout.map(|t| Instant::now() + t);
+    let mut idle = Duration::ZERO;
     loop {
-        let timeout = match first_deadline {
-            Some(d) if line.is_empty() => {
-                let now = Instant::now();
-                if now >= d {
+        let Some(b) = console.read_byte(POLL) else {
+            if let Some(t) = idle_timeout.filter(|_| line.is_empty()) {
+                idle += POLL;
+                if idle >= t {
                     return None;
                 }
-                (d - now).min(Duration::from_millis(500))
             }
-            _ => Duration::from_millis(500),
-        };
-        let Some(b) = console.read_byte(timeout) else {
             continue;
         };
         // Terminals sending CR LF must not produce an extra empty line.
@@ -159,7 +160,7 @@ pub fn read_line(
             0x20..=0x7e if line.len() < 200 => {
                 line.push(b);
                 if echo {
-                    console.write(std::str::from_utf8(&[b]).unwrap_or(""));
+                    console.write(core::str::from_utf8(&[b]).unwrap_or(""));
                 } else {
                     console.write("*");
                 }
@@ -422,13 +423,8 @@ impl<'a, C: Console, P: Platform> Shell<'a, C, P> {
     fn scan(&mut self) -> Vec<ApInfo> {
         self.line("Scanning Wi-Fi...");
         match self.platform.scan_wifi() {
-            Ok(mut aps) => {
-                // Unstable: a stable sort of more than 20 items reserves 4 KB of
-                // stack, more than a small device's shell thread can spare.
-                aps.sort_unstable_by_key(|a| -(a.rssi as i32));
-                aps.dedup_by(|a, b| a.ssid == b.ssid);
-                aps.retain(|a| !a.ssid.is_empty());
-                aps.truncate(15);
+            Ok(aps) => {
+                let aps = strongest_per_network(aps);
                 for (i, ap) in aps.iter().enumerate() {
                     self.line(&format!(
                         "  {:>2}) {:<32} ({} dBm{})",
@@ -520,10 +516,11 @@ impl<'a, C: Console, P: Platform> Shell<'a, C, P> {
             return false;
         }
         self.line("Registering with Tailscale... (press q to stop waiting)");
-        let deadline = Instant::now() + LOGIN_WAIT;
+        const POLL: Duration = Duration::from_millis(500);
+        let mut waited = Duration::ZERO;
         let mut shown_url: Option<String> = None;
         let mut last_state: Option<NodeState> = None;
-        while Instant::now() < deadline {
+        while waited < LOGIN_WAIT {
             let st = self.platform.node_state();
             if last_state.as_ref() != Some(&st) {
                 match &st {
@@ -550,12 +547,13 @@ impl<'a, C: Console, P: Platform> Shell<'a, C, P> {
                 last_state = Some(st);
                 continue;
             }
-            if let Some(b) = self.console.read_byte(Duration::from_millis(500)) {
+            if let Some(b) = self.console.read_byte(POLL) {
                 if b == b'q' || b == 0x03 {
                     self.line("stopped waiting; the node keeps trying in the background");
                     return false;
                 }
             }
+            waited += POLL;
         }
         self.line("timed out waiting for approval; run 'login' again later");
         false
@@ -650,6 +648,25 @@ impl<'a, C: Console, P: Platform> Shell<'a, C, P> {
     }
 }
 
+/// The networks of a scan to offer: one entry per name (its strongest
+/// access point, as a mesh or a radio that reports one access point several
+/// times gives many), strongest first, hidden ones left out, at most 15.
+pub fn strongest_per_network(mut aps: Vec<ApInfo>) -> Vec<ApInfo> {
+    // Unstable: a stable sort of more than 20 items reserves 4 KB of stack,
+    // more than a small device's shell thread can spare.
+    aps.sort_unstable_by_key(|a| -(a.rssi as i32));
+    let mut seen: Vec<String> = Vec::new();
+    aps.retain(|a| {
+        if a.ssid.is_empty() || seen.contains(&a.ssid) {
+            return false;
+        }
+        seen.push(a.ssid.clone());
+        true
+    });
+    aps.truncate(15);
+    aps
+}
+
 pub fn valid_hostname(h: &str) -> bool {
     !h.is_empty()
         && h.len() <= 63
@@ -661,8 +678,8 @@ pub fn valid_hostname(h: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
-    use std::collections::VecDeque;
+    use alloc::collections::VecDeque;
+    use core::cell::RefCell;
 
     struct FakeConsole {
         input: VecDeque<u8>,
@@ -757,6 +774,39 @@ mod tests {
             *self.rebooted.borrow_mut() = true;
             panic!("reboot");
         }
+    }
+
+    #[test]
+    fn one_entry_per_network() {
+        let ap = |ssid: &str, rssi: i8| ApInfo {
+            ssid: ssid.into(),
+            rssi,
+            secure: true,
+        };
+        // As a Pico 2 W saw a mesh: each access point several times, with
+        // hidden (empty) entries and another network in between.
+        let aps = vec![
+            ap("mesh", -67),
+            ap("", -49),
+            ap("mesh", -47),
+            ap("", -44),
+            ap("mesh", -44),
+            ap("other", -45),
+            ap("mesh", -50),
+            ap("far", -89),
+        ];
+        let names: Vec<(String, i8)> = strongest_per_network(aps)
+            .into_iter()
+            .map(|a| (a.ssid, a.rssi))
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                ("mesh".to_string(), -44),
+                ("other".to_string(), -45),
+                ("far".to_string(), -89)
+            ]
+        );
     }
 
     #[test]
