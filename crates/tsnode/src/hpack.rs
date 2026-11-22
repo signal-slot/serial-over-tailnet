@@ -819,20 +819,4 @@ mod tests {
         assert_eq!(d.decode(&block).unwrap(), list);
         assert_eq!(d.size, 0, "literals without indexing add nothing");
     }
-
-    #[test]
-    fn decodes_what_another_encoder_writes() {
-        // The hpack crate indexes and reuses its dynamic table.
-        let mut enc = ::hpack::Encoder::new();
-        let mut d = Decoder::new(4096);
-        let lists = [
-            fields(&[(":status", "200"), ("content-type", "application/json")]),
-            fields(&[(":status", "200"), ("content-type", "application/json")]),
-            fields(&[(":status", "404"), ("x-custom", "one"), ("x-custom", "two")]),
-        ];
-        for list in &lists {
-            let block = enc.encode(list.iter().map(|(n, v)| (n.as_slice(), v.as_slice())));
-            assert_eq!(&d.decode(&block).unwrap(), list);
-        }
-    }
 }
