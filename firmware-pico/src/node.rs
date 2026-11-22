@@ -21,7 +21,7 @@ use alloc::string::{String, ToString};
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cell::RefCell;
-use core::net::{IpAddr, SocketAddr, SocketAddrV4};
+use core::net::{IpAddr, SocketAddr};
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_net::udp::{PacketMetadata, UdpSocket};
@@ -409,8 +409,7 @@ async fn udp_task(n: &'static Node) -> ! {
     loop {
         match n.udp.recv_from(&mut buf).await {
             Ok((len, meta)) => {
-                let IpAddress::Ipv4(ip) = meta.endpoint.addr;
-                let from = SocketAddr::V4(SocketAddrV4::new(ip, meta.endpoint.port));
+                let from = SocketAddr::new(meta.endpoint.addr.into(), meta.endpoint.port);
                 n.with(|c, t| c.magic.handle_udp(from, &buf[..len], t));
             }
             Err(e) => {

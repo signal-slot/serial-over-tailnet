@@ -14,7 +14,9 @@ adapter-core = { path = "../crates/adapter-core" }
 embassy-executor = "0.10"
 embassy-rp = { version = "0.10", features = ["rp235xa", "rt", "time-driver", "critical-section-impl", "binary-info", "unstable-pac", "executor-thread"] }
 embassy-time = "0.5"
-embassy-net = { version = "0.9", features = ["tcp", "udp", "dns", "dhcpv4", "medium-ethernet", "proto-ipv4", "log", "alloc"] }
+# proto-ipv6: tsnode turns on IPv6 in the smoltcp the two share, and
+# embassy-net does not build with it on unless it knows.
+embassy-net = { version = "0.9", features = ["tcp", "udp", "dns", "dhcpv4", "medium-ethernet", "proto-ipv4", "proto-ipv6", "log", "alloc"] }
 embassy-sync = "0.8"
 embassy-futures = "0.1"
 embassy-usb = "0.6"

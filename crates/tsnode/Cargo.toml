@@ -18,7 +18,7 @@ serde_json = { version = "1", default-features = false, features = ["alloc"] }
 base64 = { version = "0.22", default-features = false, features = ["alloc"] }
 hex = { version = "0.4", default-features = false, features = ["alloc"] }
 log = "0.4"
-smoltcp = { version = "0.12", default-features = false, features = ["alloc", "log", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-tcp"] }
+smoltcp = { version = "0.13", default-features = false, features = ["alloc", "log", "medium-ip", "proto-ipv4", "proto-ipv6", "socket-tcp"] }
 
 [dev-dependencies]
 env_logger = "0.11"
