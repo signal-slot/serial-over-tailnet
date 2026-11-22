@@ -7,7 +7,7 @@ publish = false
 description = "serial-over-tailnet on the Raspberry Pi Pico 2 W (embassy, cyw43)"
 
 [dependencies]
-tsnode = { path = "../crates/tsnode", default-features = false }
+tsnode = { path = "../crates/tsnode", default-features = false, features = ["small-ram"] }
 adapter-core = { path = "../crates/adapter-core" }
 
 # The executor comes from embassy-rp (its `executor-thread` feature).

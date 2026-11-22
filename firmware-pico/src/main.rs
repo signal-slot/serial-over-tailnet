@@ -1,19 +1,21 @@
 //! serial-over-tailnet on the Raspberry Pi Pico 2 W.
 //!
 //! Core 0 runs the async side (USB console, Wi-Fi, network); core 1 runs
-//! the setup shell, the same as on the ESP32 boards. This first stage has
-//! the shell, Wi-Fi and the stored settings; the node itself (tsnode's state
-//! machines on embassy) comes next.
+//! the setup shell, the same as on the ESP32 boards. The node is tsnode's
+//! state machines driven by embassy tasks ([`node`]); the bridge carries
+//! UART0 to a TCP port on the tailnet ([`bridge`]).
 
 #![no_std]
 #![no_main]
 
 extern crate alloc;
 
+mod bridge;
 mod clock;
 mod config;
 mod console;
 mod control;
+mod node;
 mod panic;
 mod rng;
 mod shell;
@@ -27,9 +29,9 @@ use embassy_net::{Config as NetConfig, StackResources};
 use embassy_rp::flash::Flash;
 use embassy_rp::gpio::{Level, Output};
 use embassy_rp::multicore::{spawn_core1, Stack as CoreStack};
-use embassy_rp::peripherals::{DMA_CH0, PIO0, TRNG, USB};
+use embassy_rp::peripherals::{DMA_CH0, PIO0, UART0, USB};
 use embassy_rp::pio::{self, Pio};
-use embassy_rp::{bind_interrupts, dma, trng, usb};
+use embassy_rp::{bind_interrupts, dma, uart, usb};
 use embassy_time::{Duration, Timer};
 use embedded_alloc::LlffHeap;
 use log::{info, warn};
@@ -37,7 +39,7 @@ use static_cell::StaticCell;
 
 #[global_allocator]
 pub static HEAP: LlffHeap = LlffHeap::empty();
-const HEAP_SIZE: usize = 256 * 1024;
+const HEAP_SIZE: usize = 320 * 1024;
 
 #[unsafe(link_section = ".bi_entries")]
 #[used]
@@ -53,26 +55,8 @@ bind_interrupts!(struct Irqs {
     PIO0_IRQ_0 => pio::InterruptHandler<PIO0>;
     DMA_IRQ_0 => dma::InterruptHandler<DMA_CH0>;
     USBCTRL_IRQ => usb::InterruptHandler<USB>;
-    TRNG_IRQ => trng::InterruptHandler<TRNG>;
+    UART0_IRQ => uart::BufferedInterruptHandler<UART0>;
 });
-
-/// The test of the control path until the node runs here: registers a
-/// throwaway key and logs the answer.
-pub async fn control_probe(stack: embassy_net::Stack<'static>) {
-    match control::probe(stack).await {
-        Ok(p) => info!(
-            "control: register OK (authorized {}, auth URL {}, error '{}')",
-            p.authorized,
-            if p.auth_url.is_empty() {
-                "none"
-            } else {
-                "given"
-            },
-            p.error
-        ),
-        Err(e) => warn!("control: probe failed: {e}"),
-    }
-}
 
 static mut CORE1_STACK: CoreStack<{ 32 * 1024 }> = CoreStack::new();
 
@@ -114,14 +98,13 @@ async fn main(spawner: Spawner) {
         warn!("the last run ended in a panic: {msg}");
         shell::set_last_reset(alloc::format!("panic: {msg}"));
     }
+    rng::init(p.TRNG).await;
     // SAFETY: the stack is handed to core 1 once and never touched here.
     spawn_core1(
         p.CORE1,
         unsafe { &mut *core::ptr::addr_of_mut!(CORE1_STACK) },
         || shell::run(),
     );
-    let mut trng = trng::Trng::new(p.TRNG, Irqs, trng::Config::default());
-    rng::init(&mut trng).await;
 
     let fw = cyw43::aligned_bytes!("../cyw43-firmware/43439A0.bin");
     let clm = cyw43::aligned_bytes!("../cyw43-firmware/43439A0_clm.bin");
@@ -152,7 +135,7 @@ async fn main(spawner: Spawner) {
 
     let mut seed = [0u8; 8];
     let _ = getrandom::getrandom(&mut seed);
-    static RESOURCES: StaticCell<StackResources<8>> = StaticCell::new();
+    static RESOURCES: StaticCell<StackResources<12>> = StaticCell::new();
     let (stack, runner) = embassy_net::new(
         net_device,
         NetConfig::dhcpv4(Default::default()),
@@ -161,5 +144,27 @@ async fn main(spawner: Spawner) {
     );
     spawner.spawn(net_task(runner).unwrap());
 
-    wifi::Wifi::new(control, stack).run().await
+    // The serial bridge: UART0 on GP0 (TX) and GP1 (RX).
+    let saved = shell::saved_config();
+    let mut uart_cfg = uart::Config::default();
+    uart_cfg.baudrate = saved.as_ref().and_then(|c| c.baud_rate).unwrap_or(115_200);
+    static UART_TX: StaticCell<[u8; 1024]> = StaticCell::new();
+    static UART_RX: StaticCell<[u8; 2048]> = StaticCell::new();
+    let uart = uart::BufferedUart::new(
+        p.UART0,
+        p.PIN_0,
+        p.PIN_1,
+        Irqs,
+        UART_TX.init([0; 1024]),
+        UART_RX.init([0; 2048]),
+        uart_cfg,
+    );
+    let (tx, rx) = uart.split();
+    let port = saved
+        .as_ref()
+        .and_then(|c| c.tcp_port)
+        .unwrap_or(bridge::DEFAULT_PORT);
+    spawner.spawn(bridge::bridge_task(tx, rx, port).unwrap());
+
+    wifi::Wifi::new(control, stack, spawner).run().await
 }

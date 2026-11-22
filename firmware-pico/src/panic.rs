@@ -49,6 +49,30 @@ fn panic(info: &PanicInfo) -> ! {
     reset_chip()
 }
 
+/// A hard fault (a bad memory access, a stack overflow...) is recorded like a
+/// panic, with where it happened, and resets the chip.
+#[cortex_m_rt::exception]
+unsafe fn HardFault(ef: &cortex_m_rt::ExceptionFrame) -> ! {
+    // SAFETY: as in `panic`: the handler does not return, and the record is
+    // plain bytes.
+    let rec = unsafe { &mut *core::ptr::addr_of_mut!(RECORD).cast::<Record>() };
+    let mut w = Writer {
+        buf: &mut rec.text,
+        len: 0,
+    };
+    let core = embassy_rp::pac::SIO.cpuid().read();
+    let _ = write!(
+        w,
+        "hard fault on core {core} at pc {:#010x} (lr {:#010x}, sp {:#010x})",
+        ef.pc(),
+        ef.lr(),
+        ef as *const _ as usize
+    );
+    rec.len = w.len as u32;
+    rec.magic = MAGIC;
+    reset_chip()
+}
+
 /// Resets the whole chip but the oscillators, through the watchdog.
 ///
 /// `SCB::sys_reset` is not enough: it resets the processors only, and the

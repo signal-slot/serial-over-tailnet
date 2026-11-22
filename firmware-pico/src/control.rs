@@ -21,6 +21,12 @@ use tsnode::types::CAPABILITY_VERSION;
 
 pub const HOST: &str = "controlplane.tailscale.com";
 const TIMEOUT: Duration = Duration::from_secs(30);
+/// TCP keep-alive on the control connection. The map stream can be quiet
+/// for a minute, and smoltcp's socket timeout drops a connection that
+/// received nothing for that long; the server's answers to the keep-alives
+/// count, so only a dead connection times out.
+const KEEP_ALIVE: Duration = Duration::from_secs(15);
+const DEAD_AFTER: Duration = Duration::from_secs(60);
 
 pub async fn resolve(stack: Stack<'static>, host: &str) -> Result<IpAddress, String> {
     let addrs = stack
@@ -150,6 +156,14 @@ pub async fn fetch_key(stack: Stack<'static>, addr: IpAddress) -> Result<[u8; 32
     parse_prefixed(MACHINE_PUB_PREFIX, &kr.public_key).ok_or_else(|| "/key: no publicKey".into())
 }
 
+/// A piece of a response body.
+pub enum Chunk {
+    Data(Vec<u8>),
+    /// Nothing came in the time given.
+    Idle,
+    End,
+}
+
 /// A ts2021 connection: a [`ControlConn`] pumped over a TCP socket.
 pub struct ControlIo<'a> {
     sock: TcpSocket<'a>,
@@ -167,7 +181,8 @@ impl<'a> ControlIo<'a> {
         control_pub: &[u8; 32],
     ) -> Result<Self, String> {
         let mut sock = TcpSocket::new(stack, rx, tx);
-        sock.set_timeout(Some(TIMEOUT));
+        sock.set_timeout(Some(DEAD_AFTER));
+        sock.set_keep_alive(Some(KEEP_ALIVE));
         sock.connect((addr, 80))
             .await
             .map_err(|e| format!("control connect: {e:?}"))?;
@@ -194,8 +209,17 @@ impl<'a> ControlIo<'a> {
 
     /// Reads once (at most [`TIMEOUT`]) and processes what came.
     async fn process(&mut self) -> Result<(), String> {
+        if self.process_for(TIMEOUT).await? {
+            Ok(())
+        } else {
+            Err("control read timeout".into())
+        }
+    }
+
+    /// Waits up to `wait` for bytes and processes them; false if none came.
+    async fn process_for(&mut self, wait: Duration) -> Result<bool, String> {
         let want = self.cc.wanted(2048);
-        let r = with_timeout(TIMEOUT, self.sock.read(self.cc.read_buffer(want))).await;
+        let r = with_timeout(wait, self.sock.read(self.cc.read_buffer(want))).await;
         let n = match r {
             Ok(Ok(0)) => {
                 let _ = self.cc.received(0);
@@ -208,11 +232,46 @@ impl<'a> ControlIo<'a> {
             }
             Err(_) => {
                 let _ = self.cc.received(0);
-                return Err("control read timeout".into());
+                return Ok(false);
             }
         };
         self.cc.received(n).map_err(|e| format!("control: {e}"))?;
-        self.flush().await
+        self.flush().await?;
+        Ok(true)
+    }
+
+    /// Sends a JSON POST and waits for the response status; the body is
+    /// then read with [`ControlIo::next_chunk`].
+    pub async fn start_post(&mut self, path: &str, json: &[u8]) -> Result<(u32, u16), String> {
+        let id = self
+            .cc
+            .request("POST", path, &[("content-type", "application/json")], json)
+            .map_err(|e| format!("{path}: {e}"))?;
+        self.flush().await?;
+        while self.cc.body_unsent(id) {
+            self.process().await?;
+        }
+        loop {
+            if let Some(st) = self.cc.status(id).map_err(|e| format!("{path}: {e}"))? {
+                return Ok((id, st));
+            }
+            self.process().await?;
+        }
+    }
+
+    /// The next piece of a response body, waiting at most `wait` for it.
+    pub async fn next_chunk(&mut self, id: u32, wait: Duration) -> Result<Chunk, String> {
+        loop {
+            match self.cc.take_body(id).map_err(|e| format!("control: {e}"))? {
+                Body::Data(d) => return Ok(Chunk::Data(d)),
+                Body::End => return Ok(Chunk::End),
+                Body::Pending => {
+                    if !self.process_for(wait).await? {
+                        return Ok(Chunk::Idle);
+                    }
+                }
+            }
+        }
     }
 
     /// POSTs a JSON body and returns the status and the whole response body.
@@ -256,54 +315,4 @@ impl<'a> ControlIo<'a> {
     pub fn close(mut self) {
         self.sock.close();
     }
-}
-
-/// What `probe` found out.
-pub struct Probe {
-    pub authorized: bool,
-    pub auth_url: String,
-    pub error: String,
-}
-
-/// Registers a throwaway node key without an auth key, as `hostnode
-/// probe-control` does: proves DNS, TCP, the Noise handshake and HTTP/2.
-pub async fn probe(stack: Stack<'static>) -> Result<Probe, String> {
-    use tsnode::keys::{fmt_node_pub, KeyPair};
-    use tsnode::types::{hostinfo, RegisterRequest, RegisterResponse, ZERO_TIME};
-
-    let addr = resolve(stack, HOST).await?;
-    log::info!("control: {HOST} is {addr}");
-    sync_clock(stack, addr).await?;
-    log::info!("control: clock set to {} (Unix)", crate::clock::now());
-    let key = fetch_key(stack, addr).await?;
-    log::info!("control: got the server key");
-    let machine = KeyPair::generate();
-    let node = KeyPair::generate();
-    let mut rx = alloc::vec![0u8; 8192];
-    let mut tx = alloc::vec![0u8; 4096];
-    let mut io = ControlIo::open(stack, &mut rx, &mut tx, addr, machine.secret(), &key).await?;
-    log::info!("control: Noise handshake done");
-    let req = RegisterRequest {
-        version: CAPABILITY_VERSION,
-        node_key: fmt_node_pub(node.public()),
-        old_node_key: fmt_node_pub(&[0u8; 32]),
-        auth: None,
-        expiry: ZERO_TIME.into(),
-        followup: String::new(),
-        hostinfo: hostinfo("tsnode-probe", env!("CARGO_PKG_VERSION"), 0),
-        ephemeral: false,
-    };
-    let json = serde_json::to_vec(&req).map_err(|e| e.to_string())?;
-    let (status, body) = io.post_json("/machine/register", &json, 64 * 1024).await?;
-    io.close();
-    if status != 200 {
-        return Err(format!("register: HTTP {status}"));
-    }
-    let resp: RegisterResponse =
-        serde_json::from_slice(&body).map_err(|e| format!("register: bad json: {e}"))?;
-    Ok(Probe {
-        authorized: resp.machine_authorized,
-        auth_url: resp.auth_url,
-        error: resp.error,
-    })
 }

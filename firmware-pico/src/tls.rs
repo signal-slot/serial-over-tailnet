@@ -229,6 +229,16 @@ impl<'a> TlsStream<'a> {
         Ok(n)
     }
 
+    /// Waits until [`TlsStream::read`] has something to work on: decrypted
+    /// bytes, or bytes from the socket. Unlike `read`, it can be dropped at
+    /// any point (to wait for something else at the same time).
+    pub async fn readable(&self) {
+        if !self.plain.is_empty() || self.eof || self.sock.can_recv() {
+            return;
+        }
+        self.sock.wait_read_ready().await
+    }
+
     pub fn close(mut self) {
         self.sock.close();
     }

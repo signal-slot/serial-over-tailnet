@@ -27,6 +27,7 @@ pub enum Request {
     Reconnect,
     Save(SavedConfig),
     FactoryReset,
+    StartNode,
 }
 
 pub enum Response {
@@ -164,13 +165,14 @@ struct PicoPlatform;
 
 impl Platform for PicoPlatform {
     fn status(&self) -> StatusSnapshot {
+        let node = crate::node::snapshot();
         StatusSnapshot {
             firmware: env!("CARGO_PKG_VERSION").into(),
             setup_mode: false,
             wifi: critical_section::with(|cs| WIFI_STATE.borrow_ref(cs).clone()),
-            node: Some(NodeState::Off),
-            derp: "-".into(),
-            peers: "-".into(),
+            node: Some(self.node_state()),
+            derp: node.as_ref().map_or("-".into(), |s| s.derp.clone()),
+            peers: node.as_ref().map_or("-".into(), |s| s.peers.clone()),
             usb: "console (this board has no USB host)".into(),
             heap: format!(
                 "free {} KB, used {} KB",
@@ -218,11 +220,21 @@ impl Platform for PicoPlatform {
     }
 
     fn start_node(&self) -> Result<(), String> {
-        Err("the Tailscale node is not on the Pico 2 W yet".into())
+        match call(Request::StartNode) {
+            Response::Done(r) => r,
+            _ => Err("internal error".into()),
+        }
     }
 
     fn node_state(&self) -> NodeState {
-        NodeState::Off
+        crate::node::snapshot().map_or(NodeState::Off, |s| s.state)
+    }
+
+    fn is_registered(&self) -> bool {
+        config::values()
+            .get(tsnode::node::KEY_REGISTERED)
+            .map(String::as_str)
+            == Some("1")
     }
 
     fn factory_reset(&self) -> Result<(), String> {

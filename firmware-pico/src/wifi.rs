@@ -9,10 +9,14 @@ use alloc::format;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use cyw43::{Control, JoinOptions, ScanOptions};
+use embassy_executor::Spawner;
+use embassy_futures::select::{select, Either};
 use embassy_net::Stack;
-use embassy_time::{with_timeout, Duration};
+use embassy_time::{with_timeout, Duration, Instant, Timer};
 use log::{info, warn};
 
+/// Wait between attempts to join a known network.
+const RETRY: Duration = Duration::from_secs(10);
 const JOIN_TIMEOUT: Duration = Duration::from_secs(20);
 const DHCP_TIMEOUT: Duration = Duration::from_secs(20);
 const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -20,14 +24,16 @@ const SCAN_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct Wifi {
     control: Control<'static>,
     stack: Stack<'static>,
+    spawner: Spawner,
     joined: bool,
 }
 
 impl Wifi {
-    pub fn new(control: Control<'static>, stack: Stack<'static>) -> Self {
+    pub fn new(control: Control<'static>, stack: Stack<'static>, spawner: Spawner) -> Self {
         Wifi {
             control,
             stack,
+            spawner,
             joined: false,
         }
     }
@@ -137,22 +143,47 @@ impl Wifi {
                 Response::Done(config::modify(|v| shell::store_config(v, &c)).map_err(String::from))
             }
             Request::FactoryReset => Response::Done(config::erase().map_err(String::from)),
+            Request::StartNode => Response::Done(crate::node::start(self.spawner, self.stack)),
         }
     }
 
-    /// Joins a known network, then serves the shell.
+    /// Joined, with the link up and an address.
+    fn online(&self) -> bool {
+        self.joined && self.stack.is_link_up() && self.stack.is_config_up()
+    }
+
+    /// Serves the shell, and joins a known network whenever there is no
+    /// link (at boot, after a failed join or DHCP, after the network went
+    /// away), then starts the node.
     pub async fn run(mut self) -> ! {
-        if shell::saved_config().is_some() {
-            if self.reconnect().await.is_ok() {
-                crate::control_probe(self.stack).await;
-            }
-        } else {
+        if shell::saved_config().is_none() {
             shell::set_wifi_state("not configured".into());
         }
+        let mut next_try = Instant::now();
         loop {
-            let req = shell::REQUESTS.receive().await;
-            let resp = self.handle(req).await;
-            shell::RESPONSES.send(resp).await;
+            let want_link = shell::saved_config().is_some() && !self.online();
+            let req = if want_link {
+                match select(shell::REQUESTS.receive(), Timer::at(next_try)).await {
+                    Either::First(r) => Some(r),
+                    Either::Second(()) => None,
+                }
+            } else {
+                Some(shell::REQUESTS.receive().await)
+            };
+            match req {
+                Some(req) => {
+                    let resp = self.handle(req).await;
+                    shell::RESPONSES.send(resp).await;
+                }
+                None => {
+                    if self.reconnect().await.is_ok() {
+                        if let Err(e) = crate::node::start(self.spawner, self.stack) {
+                            warn!("node: {e}");
+                        }
+                    }
+                    next_try = Instant::now() + RETRY;
+                }
+            }
         }
     }
 }
