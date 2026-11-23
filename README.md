@@ -23,7 +23,7 @@ Working end to end:
 - Wi-Fi setup through the wizard and joining a tailnet with the approval URL.
 - `tailscale ping` from another node, both via DERP and over a direct path.
 - With a XIAO ESP32S3: the console of a Raspberry Pi 5 over its 3.3 V UART (the 3-pin debug connector).
-- With a XIAO ESP32C3 (no PSRAM): joining a tailnet of 50 peers, its DERP connection, 300 bridge connections in a row with memory steady, and its UART in a loopback (D10 wired to D8) over the tailnet.
+- With a XIAO ESP32C3 (no PSRAM): joining a tailnet of 50 peers, its DERP connection, 300 bridge connections in a row with memory steady, its UART in a loopback (D10 wired to D8) over the tailnet, and the console of a NanoPC-T6 on its 3.3 V debug UART at 1500000 baud, the line set by pyserial's `rfc2217://`.
 - With a YD-ESP32-S3: console access to a Raspberry Pi Debug Probe (CDC-ACM) and a Toradex Dahlia (FT4232H) over USB.
 - RFC 2217 sessions against both USB targets: baud rate and framing changes, DTR and RTS, break and purge from pyserial.
 - On the FT4232H, three ports claimed at once and a client on the fourth port refused.
@@ -32,8 +32,6 @@ Working end to end:
 Not yet:
 
 - Headless registration with an auth key.
-- RFC 2217 sessions on the XIAO's UART (implemented, not tried against a client).
-- The XIAO ESP32C3's UART against a target (only a loopback so far).
 - CP210x, CH340/CH341, and non-H-series FTDI chips such as the FT232R.
 - Recovery after a reboot of the target SBC, an internet outage, or an unreachable control server.
 - Long-running operation, behaviour after node key expiry (180 days by default), and reboots triggered by the task watchdog.

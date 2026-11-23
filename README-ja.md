@@ -23,7 +23,7 @@ Tailscale のノードとして必要な機能（制御プロトコル、WireGua
 - ウィザードによる Wi-Fi 設定と、承認 URL 方式での Tailnet 参加。
 - 別ノードからの `tailscale ping`（DERP 経由と直接経路）。
 - XIAO ESP32S3 での、Raspberry Pi 5 の 3.3 V の UART（3 ピンのデバッグ用コネクタ）のコンソール操作。
-- XIAO ESP32C3（PSRAM なし）での、ピア 50 台の Tailnet への参加、DERP 接続、ブリッジへの 300 回続けての接続（メモリは横ばい）、Tailnet 経由での UART の折り返し（D10 と D8 を直結）。
+- XIAO ESP32C3（PSRAM なし）での、ピア 50 台の Tailnet への参加、DERP 接続、ブリッジへの 300 回続けての接続（メモリは横ばい）、Tailnet 経由での UART の折り返し（D10 と D8 を直結）、NanoPC-T6 の 3.3 V のデバッグ UART（1500000 baud、回線は pyserial の `rfc2217://` で設定）のコンソール操作。
 - YD-ESP32-S3 での、USB 経由の Raspberry Pi Debug Probe（CDC-ACM）と Toradex Dahlia（FT4232H）のコンソール操作。
 - USB の対象 2 つに対する RFC 2217 セッション。pyserial からのボーレートとフレーミングの変更、DTR と RTS、ブレーク、purge。
 - FT4232H で 3 ポートを同時に claim し、4 つ目のポートのクライアントが拒否されること。
@@ -32,8 +32,6 @@ Tailscale のノードとして必要な機能（制御プロトコル、WireGua
 まだのものは次のとおりである。
 
 - auth key による headless 登録。
-- XIAO の UART での RFC 2217 セッション（実装済み、クライアントでは未確認）。
-- XIAO ESP32C3 の UART を対象につないだ動作（確かめたのは折り返しだけ）。
 - CP210x、CH340/CH341、FT232R など H シリーズ以外の FTDI。
 - 対象 SBC 自体の再起動、インターネット断、control サーバ到達不能からの復帰。
 - 長時間運用、鍵期限切れ（既定 180 日）後の挙動、Task WDT による再起動。

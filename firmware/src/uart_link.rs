@@ -19,6 +19,7 @@ use esp_idf_svc::hal::gpio::{InputPin, OutputPin};
 use esp_idf_svc::hal::uart::{config, UartDriver, UART1};
 use esp_idf_svc::hal::units::Hertz;
 use esp_idf_svc::sys;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -33,6 +34,8 @@ struct Inner {
     baud: u32,
     line: Mutex<LineSettings>,
     modem: Mutex<(bool, bool)>,
+    /// A purge asked for; carried out by the reading thread (see `purge_rx`).
+    purge: AtomicBool,
 }
 
 impl UartSerial {
@@ -60,6 +63,7 @@ impl UartSerial {
                 baud,
                 line: Mutex::new(LineSettings::new(baud)),
                 modem: Mutex::new((true, true)),
+                purge: AtomicBool::new(false),
             }),
         })
     }
@@ -154,10 +158,18 @@ impl Serial for UartSerial {
     }
 
     fn purge_rx(&self) {
-        let _ = self.inner.uart.clear_rx();
+        // Done by the thread that reads, before its next read. Flushing from
+        // here waits for the driver's receive lock, which that thread holds
+        // through every read and takes again at once: on the single-core
+        // ESP32-C3 the purge waited for seconds, past pyserial's patience
+        // ("timeout while waiting for option 'purge'").
+        self.inner.purge.store(true, Ordering::Release);
     }
 
     fn read(&self, buf: &mut [u8], timeout: Duration) -> usize {
+        if self.inner.purge.swap(false, Ordering::AcqRel) {
+            let _ = self.inner.uart.clear_rx();
+        }
         let ticks: TickType = timeout.into();
         self.inner.uart.read(buf, ticks.ticks()).unwrap_or(0)
     }
