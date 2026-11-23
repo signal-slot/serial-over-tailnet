@@ -8,6 +8,7 @@ use crate::control::ControlClient;
 use crate::magicsock::MagicSock;
 use crate::net::Dialer;
 use crate::netstack::{NetStack, TcpListener};
+use crate::types::peer_stream;
 use std::io;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -307,7 +308,10 @@ impl Node {
             if inner.shutdown.load(Ordering::Relaxed) {
                 return Ok(());
             }
-            match stream.next(MAP_POLL) {
+            // Peers are applied as they are parsed, not held all at once
+            // (a reconnect's first message lists them all again).
+            let mut sink = |ev: PeerEvent| self.with_cores(|n, m, _| n.on_peer_event(ev, m));
+            match peer_stream::with_sink(&mut sink, || stream.next(MAP_POLL)) {
                 Ok(Some(resp)) => self.with_cores(|n, m, now| n.on_map_response(resp, m, now)),
                 Ok(None) => {
                     return Err(io::Error::new(

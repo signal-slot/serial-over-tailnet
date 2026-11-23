@@ -338,6 +338,20 @@ impl MagicCore {
         debug!("magicsock: {} peers", self.peers.len());
     }
 
+    /// Forgets the peers whose keys are not in `keys` (the end of a full
+    /// list that came one peer at a time through [`MagicCore::peers_changed`]).
+    pub fn retain_peers(&mut self, keys: &[[u8; 32]]) {
+        let gone: Vec<[u8; 32]> = self
+            .peers
+            .keys()
+            .filter(|k| !keys.contains(k))
+            .copied()
+            .collect();
+        for key in gone {
+            self.remove_peer(key);
+        }
+    }
+
     pub fn peers_changed(&mut self, nodes: Vec<Box<Node>>) {
         for n in nodes {
             let Some(key) = n.key else {

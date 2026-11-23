@@ -174,6 +174,7 @@ pub(crate) fn parse_cidr(s: &str) -> Option<(IpAddr, u8)> {
 /// `null` is taken as absent.
 mod de {
     use crate::keys::{parse_prefixed, DISCO_PUB_PREFIX, NODE_PUB_PREFIX};
+    use alloc::boxed::Box;
     use alloc::string::String;
     use alloc::vec::Vec;
     use core::net::{IpAddr, Ipv4Addr, SocketAddr};
@@ -246,6 +247,65 @@ mod de {
             .next()
             .and_then(|r| r.parse().ok())
             .unwrap_or(0))
+    }
+
+    // Boxed on purpose, as in `MapResponse::peers`.
+    #[allow(clippy::vec_box)]
+    pub fn peers_full<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<Option<Vec<Box<super::Node>>>, D::Error> {
+        peer_list(d, super::PeerList::Full)
+    }
+
+    #[allow(clippy::vec_box)]
+    pub fn peers_changed<'de, D: Deserializer<'de>>(
+        d: D,
+    ) -> Result<Option<Vec<Box<super::Node>>>, D::Error> {
+        peer_list(d, super::PeerList::Changed)
+    }
+
+    /// A list of nodes, or `None` for `null`. While a peer sink is set
+    /// (see [`super::peer_stream`]) each node goes to it as soon as it is
+    /// parsed, and the list comes back as `None`.
+    #[allow(clippy::vec_box)]
+    fn peer_list<'de, D: Deserializer<'de>>(
+        d: D,
+        kind: super::PeerList,
+    ) -> Result<Option<Vec<Box<super::Node>>>, D::Error> {
+        struct Nodes(super::PeerList);
+        impl<'de> Visitor<'de> for Nodes {
+            type Value = Option<Vec<Box<super::Node>>>;
+            fn expecting(&self, f: &mut core::fmt::Formatter) -> core::fmt::Result {
+                f.write_str("a list of nodes or null")
+            }
+            fn visit_none<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Self::Value, E> {
+                Ok(None)
+            }
+            fn visit_some<D: Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+                d.deserialize_seq(self)
+            }
+            fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+                let mut nodes = Vec::new();
+                let mut streamed = false;
+                while let Some(n) = seq.next_element::<Box<super::Node>>()? {
+                    match super::peer_stream::offer(super::PeerEvent::Node(self.0, n)) {
+                        Some(super::PeerEvent::Node(_, n)) => nodes.push(n),
+                        _ => streamed = true,
+                    }
+                }
+                // Sent even after streamed nodes: the end of a full list is
+                // when the peers missing from it are dropped.
+                let end = super::peer_stream::offer(super::PeerEvent::End(self.0));
+                if streamed || end.is_none() {
+                    return Ok(None);
+                }
+                Ok(Some(nodes))
+            }
+        }
+        d.deserialize_option(Nodes(kind))
     }
 }
 
@@ -356,7 +416,12 @@ pub struct MapResponse {
     /// Each node boxed: a list of 50 in one block (about 9 KB on a 32-bit
     /// chip, doubling as it grows) was more than an ESP32-C3 had free in
     /// one piece while the map was read.
+    ///
+    /// Read with a peer sink set (see [`peer_stream`]), both lists come
+    /// back as `None`: their nodes went to the sink one at a time.
+    #[serde(deserialize_with = "de::peers_full")]
     pub peers: Option<Vec<Box<Node>>>,
+    #[serde(deserialize_with = "de::peers_changed")]
     pub peers_changed: Option<Vec<Box<Node>>>,
     pub peers_removed: Option<Vec<i64>>,
     pub peers_changed_patch: Option<Vec<PeerChange>>,
@@ -368,6 +433,83 @@ pub struct MapResponse {
     pub domain: String,
     pub health: Option<Vec<String>>,
     pub control_time: Option<String>,
+}
+
+/// The two peer lists of a [`MapResponse`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PeerList {
+    /// `Peers`: every peer; the ones not in it are gone.
+    Full,
+    /// `PeersChanged`: peers added or changed.
+    Changed,
+}
+
+/// What a peer sink receives while a map message is parsed.
+#[derive(Debug)]
+pub enum PeerEvent {
+    /// The next node of a list.
+    Node(PeerList, Box<Node>),
+    /// The list is complete (also sent for an empty one, not for `null`).
+    End(PeerList),
+}
+
+/// Peers handed over one at a time while a map message is parsed, instead
+/// of collected in it.
+///
+/// On a reconnect the first message repeats every peer, and parsed as a
+/// whole it was held next to the peer table it replaces: about 30 KB more
+/// than an ESP32-C3 has free, which restarted it each time the map stream
+/// reconnected. With a sink, one node at a time is held.
+#[cfg(feature = "std")]
+pub mod peer_stream {
+    use super::PeerEvent;
+    use std::cell::Cell;
+
+    type Sink = dyn FnMut(PeerEvent);
+
+    std::thread_local! {
+        static SINK: Cell<Option<*mut Sink>> = const { Cell::new(None) };
+    }
+
+    /// Runs `f`; map messages parsed by it on this thread hand their peers
+    /// to `sink` as they are read.
+    pub fn with_sink<R>(sink: &mut dyn FnMut(PeerEvent), f: impl FnOnce() -> R) -> R {
+        struct Restore(Option<*mut Sink>);
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                SINK.with(|s| s.set(self.0));
+            }
+        }
+        // SAFETY: only the lifetime is erased. The pointer is taken out
+        // again when this function returns or unwinds (`Restore`), while
+        // `sink` is still borrowed, and only this thread sees it.
+        let ptr: *mut Sink = unsafe { core::mem::transmute(sink) };
+        let _restore = Restore(SINK.with(|s| s.replace(Some(ptr))));
+        f()
+    }
+
+    /// Gives `ev` to the sink, if one is set; otherwise returns it.
+    pub(crate) fn offer(ev: PeerEvent) -> Option<PeerEvent> {
+        match SINK.with(|s| s.get()) {
+            Some(sink) => {
+                // SAFETY: see `with_sink`. The sink does not parse maps, so
+                // it is not entered twice.
+                unsafe { (*sink)(ev) };
+                None
+            }
+            None => Some(ev),
+        }
+    }
+}
+
+/// Without std there is no sink: peers are always collected.
+#[cfg(not(feature = "std"))]
+pub mod peer_stream {
+    use super::PeerEvent;
+
+    pub(crate) fn offer(ev: PeerEvent) -> Option<PeerEvent> {
+        Some(ev)
+    }
 }
 
 /// Builds the `Hostinfo` we advertise.
@@ -398,6 +540,52 @@ pub fn hostinfo(hostname: &str, version: &str, preferred_derp: i32) -> Hostinfo 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn peer_json(id: i64, key: u8) -> String {
+        format!(
+            r#"{{"ID":{id},"Key":"nodekey:{}","Name":"p{id}"}}"#,
+            format!("{key:02x}").repeat(32)
+        )
+    }
+
+    #[test]
+    fn peer_lists_are_collected_without_a_sink() {
+        let json = format!(
+            r#"{{"Peers":[{},{}],"PeersChanged":[],"PeersRemoved":[5]}}"#,
+            peer_json(1, 1),
+            peer_json(2, 2)
+        );
+        let r: MapResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(r.peers.unwrap().len(), 2);
+        assert_eq!(r.peers_changed.unwrap().len(), 0);
+        let r: MapResponse = serde_json::from_str(r#"{"Peers":null}"#).unwrap();
+        assert!(r.peers.is_none() && r.peers_changed.is_none());
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn a_sink_gets_peers_one_at_a_time() {
+        let json = format!(
+            r#"{{"Peers":[{},{}],"PeersChanged":[],"DERPMap":null,"PeersRemoved":[5]}}"#,
+            peer_json(1, 1),
+            peer_json(2, 2)
+        );
+        let mut seen = Vec::new();
+        let mut sink = |ev: PeerEvent| {
+            seen.push(match ev {
+                PeerEvent::Node(l, n) => format!("{l:?} {}", n.id),
+                PeerEvent::End(l) => format!("{l:?} end"),
+            })
+        };
+        let r: MapResponse =
+            peer_stream::with_sink(&mut sink, || serde_json::from_str(&json)).unwrap();
+        assert_eq!(seen, ["Full 1", "Full 2", "Full end", "Changed end"]);
+        assert!(r.peers.is_none() && r.peers_changed.is_none());
+        assert_eq!(r.peers_removed, Some(vec![5]));
+        // The sink is gone afterwards.
+        let r: MapResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(r.peers.unwrap().len(), 2);
+    }
 
     #[test]
     fn node_keys_and_addresses_are_parsed_and_the_rest_skipped() {

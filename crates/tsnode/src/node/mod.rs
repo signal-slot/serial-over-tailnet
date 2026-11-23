@@ -121,6 +121,9 @@ pub struct NodeCore {
     last_msg: Option<Instant>,
     /// When to choose a home region from the STUN answers.
     home_probe_due: Option<Instant>,
+    /// Keys of a full peer list arriving one peer at a time
+    /// ([`NodeCore::on_peer_event`]).
+    full_peers: Vec<[u8; 32]>,
     actions: VecDeque<Action>,
 }
 
@@ -148,6 +151,7 @@ impl NodeCore {
             last_lite: None,
             last_msg: None,
             home_probe_due: None,
+            full_peers: Vec::new(),
             actions: VecDeque::new(),
         }
     }
@@ -308,6 +312,8 @@ impl NodeCore {
     /// Before the map stream is requested: reconnects to the home DERP of
     /// an earlier run so that peers can reach the node early.
     pub fn starting_map(&mut self, magic: &mut MagicCore, now: Instant) {
+        // What is left of a list a broken stream cut short.
+        self.full_peers.clear();
         if magic.home_derp() == 0 {
             if let Some(r) = self.saved_home {
                 magic.connect_home_derp(r, now);
@@ -402,6 +408,28 @@ impl NodeCore {
     }
 
     /// A message from the map stream.
+    /// A peer handed over while a map message is being parsed (see
+    /// [`crate::types::peer_stream`]); the rest of the message follows in
+    /// [`NodeCore::on_map_response`].
+    pub fn on_peer_event(&mut self, ev: PeerEvent, magic: &mut MagicCore) {
+        match ev {
+            PeerEvent::Node(list, node) => {
+                if list == PeerList::Full {
+                    if let Some(key) = node.key {
+                        self.full_peers.push(key);
+                    }
+                }
+                magic.peers_changed(alloc::vec![node]);
+            }
+            PeerEvent::End(PeerList::Full) => {
+                let keys = core::mem::take(&mut self.full_peers);
+                magic.retain_peers(&keys);
+                info!("node: {} peers", keys.len());
+            }
+            PeerEvent::End(PeerList::Changed) => {}
+        }
+    }
+
     pub fn on_map_response(&mut self, mut resp: MapResponse, magic: &mut MagicCore, now: Instant) {
         self.last_msg = Some(now);
         debug!(
@@ -571,6 +599,37 @@ mod tests {
 
     fn actions(n: &mut NodeCore) -> Vec<Action> {
         core::iter::from_fn(|| n.poll_action()).collect()
+    }
+
+    fn peer(id: i64, key: u8) -> Box<crate::types::Node> {
+        Box::new(crate::types::Node {
+            id,
+            name: format!("p{id}"),
+            key: Some([key; 32]),
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn a_full_list_one_peer_at_a_time_drops_the_missing_peers() {
+        let mut m = magic();
+        let mut n = NodeCore::new(settings(), KeyPair::generate(), true, None);
+        let t = Instant::from_millis(0);
+        m.set_peers(vec![peer(1, 1), peer(2, 2), peer(3, 3)]);
+        n.starting_map(&mut m, t);
+        for p in [peer(1, 1), peer(3, 3), peer(4, 4)] {
+            n.on_peer_event(PeerEvent::Node(PeerList::Full, p), &mut m);
+        }
+        // Until the list ends, nobody is dropped.
+        assert_eq!(m.peer_status(t).len(), 4);
+        n.on_peer_event(PeerEvent::End(PeerList::Full), &mut m);
+        let mut names: Vec<String> = m.peer_status(t).into_iter().map(|p| p.name).collect();
+        names.sort();
+        assert_eq!(names, ["p1", "p3", "p4"]);
+        // A changed list adds and keeps the rest.
+        n.on_peer_event(PeerEvent::Node(PeerList::Changed, peer(5, 5)), &mut m);
+        n.on_peer_event(PeerEvent::End(PeerList::Changed), &mut m);
+        assert_eq!(m.peer_status(t).len(), 4);
     }
 
     #[test]
