@@ -10,12 +10,11 @@ use crate::keys::{short, KeyPair};
 use crate::net::Dialer;
 use crate::time::{Instant, WallClock};
 use crate::types::{DerpMap, DerpNode, Node, PeerChange};
-use alloc::collections::BTreeMap;
+use alloc::collections::{BTreeMap, VecDeque};
 use log::{debug, info, trace, warn};
 use std::io;
 use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -35,8 +34,59 @@ const UDP_BUF: usize = if cfg!(feature = "small-ram") {
 const LAN_IP_INTERVAL: Duration = Duration::from_secs(10);
 
 struct DerpHandle {
-    tx: SyncSender<DerpCmd>,
+    queue: Arc<DerpQueue>,
     connected: Arc<AtomicBool>,
+}
+
+impl Drop for DerpHandle {
+    /// The DERP thread ends once its handle is gone.
+    fn drop(&mut self) {
+        self.queue.close();
+    }
+}
+
+/// Commands for one DERP thread, which polls them.
+///
+/// Not `std::sync::mpsc`: creating one of its channels puts a value aligned
+/// to 64 bytes on the stack, and the Xtensa compiler realigns such a frame
+/// by adding to the stack pointer without `movsp`. When the caller's
+/// registers had already been spilled, its return address and stack pointer
+/// were restored from the wrong place (the ESP32-S3 crashed about once in
+/// 100 bridge connections while this was inlined into `flush`).
+struct DerpQueue {
+    state: Mutex<(VecDeque<DerpCmd>, bool)>,
+}
+
+impl DerpQueue {
+    fn new() -> Self {
+        DerpQueue {
+            state: Mutex::new((VecDeque::new(), false)),
+        }
+    }
+
+    /// False when the queue is full.
+    fn push(&self, cmd: DerpCmd) -> bool {
+        let mut st = self.state.lock().unwrap();
+        if st.0.len() >= DERP_QUEUE_LIMIT {
+            return false;
+        }
+        st.0.push_back(cmd);
+        true
+    }
+
+    /// The next command; `Close` once the handle is gone.
+    fn pop(&self) -> Option<DerpCmd> {
+        let mut st = self.state.lock().unwrap();
+        match st.0.pop_front() {
+            Some(c) => Some(c),
+            None if st.1 => Some(DerpCmd::Close),
+            None => None,
+        }
+    }
+
+    fn close(&self) {
+        self.state.lock().unwrap().1 = true;
+    }
 }
 
 enum DerpCmd {
@@ -153,13 +203,12 @@ impl MagicSock {
                 }
                 Event::DerpPreferred { region } => {
                     if let Some(h) = self.inner.derps.lock().unwrap().get(&region) {
-                        let _ = h.tx.try_send(DerpCmd::NotePreferred(true));
+                        h.queue.push(DerpCmd::NotePreferred(true));
                     }
                 }
                 Event::DerpClose { region } => {
-                    if let Some(h) = self.inner.derps.lock().unwrap().remove(&region) {
-                        let _ = h.tx.try_send(DerpCmd::Close);
-                    }
+                    // Dropping the handle closes the thread's queue.
+                    self.inner.derps.lock().unwrap().remove(&region);
                 }
                 Event::EndpointsChanged => endpoints_changed = true,
             }
@@ -174,9 +223,7 @@ impl MagicSock {
                     let Some(h) = derps.get(&region) else {
                         continue;
                     };
-                    if let Err(TrySendError::Full(_)) =
-                        h.tx.try_send(DerpCmd::Send { dst, pkt: data })
-                    {
+                    if !h.queue.push(DerpCmd::Send { dst, pkt: data }) {
                         trace!("magicsock: DERP {region} send queue full; dropping packet");
                     }
                 }
@@ -225,10 +272,9 @@ impl MagicSock {
 
     pub fn shutdown(&self) {
         self.inner.shutdown.store(true, Ordering::Relaxed);
+        // Dropping the handles closes the threads' queues.
         let derps = std::mem::take(&mut *self.inner.derps.lock().unwrap());
-        for (_, h) in derps {
-            let _ = h.tx.try_send(DerpCmd::Close);
-        }
+        drop(derps);
     }
 
     pub fn local_endpoints(&self) -> Vec<SocketAddr> {
@@ -313,15 +359,16 @@ impl MagicSock {
 
     /// Starts the thread for DERP `region`. False if it cannot be started.
     fn open_derp(&self, region: i32, node: DerpNode, key: KeyPair) -> bool {
-        let (tx, rx) = mpsc::sync_channel(DERP_QUEUE_LIMIT);
+        let queue = Arc::new(DerpQueue::new());
         let connected = Arc::new(AtomicBool::new(false));
         let me = self.clone();
+        let q2 = queue.clone();
         let c2 = connected.clone();
         let name = format!("derp-{region}");
         if let Err(e) = (self.inner.spawner)(
             &name,
             self.inner.stack_size,
-            Box::new(move || me.derp_loop(region, node, key, rx, c2)),
+            Box::new(move || me.derp_loop(region, node, key, q2, c2)),
         ) {
             warn!("magicsock: cannot spawn DERP thread: {e}");
             return false;
@@ -330,7 +377,7 @@ impl MagicSock {
             .derps
             .lock()
             .unwrap()
-            .insert(region, DerpHandle { tx, connected });
+            .insert(region, DerpHandle { queue, connected });
         true
     }
 
@@ -339,7 +386,7 @@ impl MagicSock {
         region: i32,
         node: DerpNode,
         key: KeyPair,
-        rx: Receiver<DerpCmd>,
+        queue: Arc<DerpQueue>,
         connected: Arc<AtomicBool>,
     ) {
         let mut backoff = Duration::from_secs(1);
@@ -350,16 +397,18 @@ impl MagicSock {
                     Ok(c) => c,
                     Err(e) => {
                         warn!("derp[{region}]: connect to {} failed: {e}", node.host_name);
-                        // Drain commands while waiting so senders never block.
+                        // Drain commands while waiting so the queue does not
+                        // fill with stale packets.
                         let until = std::time::Instant::now() + backoff;
                         while std::time::Instant::now() < until {
-                            match rx.recv_timeout(Duration::from_millis(200)) {
-                                Ok(DerpCmd::Close) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                                    break 'outer
+                            while let Some(cmd) = queue.pop() {
+                                match cmd {
+                                    DerpCmd::Close => break 'outer,
+                                    DerpCmd::NotePreferred(p) => preferred = p,
+                                    DerpCmd::Send { .. } => {}
                                 }
-                                Ok(DerpCmd::NotePreferred(p)) => preferred = p,
-                                _ => {}
                             }
+                            std::thread::sleep(Duration::from_millis(200));
                         }
                         backoff = (backoff * 2).min(Duration::from_secs(60));
                         continue;
@@ -396,21 +445,20 @@ impl MagicSock {
                     }
                 }
                 let mut failed = false;
-                loop {
-                    match rx.try_recv() {
-                        Ok(DerpCmd::Send { dst, pkt }) => {
+                while let Some(cmd) = queue.pop() {
+                    match cmd {
+                        DerpCmd::Send { dst, pkt } => {
                             if let Err(e) = client.send_packet(&dst, &pkt) {
                                 warn!("derp[{region}]: send failed: {e}");
                                 failed = true;
                                 break;
                             }
                         }
-                        Ok(DerpCmd::NotePreferred(p)) => {
+                        DerpCmd::NotePreferred(p) => {
                             preferred = p;
                             let _ = client.note_preferred(p);
                         }
-                        Ok(DerpCmd::Close) | Err(TryRecvError::Disconnected) => break 'outer,
-                        Err(TryRecvError::Empty) => break,
+                        DerpCmd::Close => break 'outer,
                     }
                 }
                 if failed {

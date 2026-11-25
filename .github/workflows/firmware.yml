@@ -88,6 +88,11 @@ jobs:
           fi
           cargo build --release ${{ matrix.features }}
 
+      - name: Stack realignment check
+        if: matrix.variant != 'xiao-c3'
+        working-directory: firmware
+        run: tools/check-stack-realign.sh target/xtensa-esp32s3-espidf/release/serial-over-tailnet-firmware
+
       - name: Flash image
         working-directory: firmware
         run: tools/mkimage.sh ${{ matrix.variant }} release dist/${{ matrix.variant }}

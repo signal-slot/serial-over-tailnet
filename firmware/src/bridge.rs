@@ -21,10 +21,9 @@
 use crate::usb_host::UsbSerial;
 use adapter_core::rfc2217::{Command, Purge, Session};
 use adapter_core::usbserial::LineSettings;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use log::{info, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tsnode::netstack::TcpStream;
@@ -108,7 +107,13 @@ pub fn run<S: Serial>(node: Node, serial: S, port: u16) -> Result<()> {
     info!("bridge: listening on tailnet port {port}");
     let busy = Arc::new(AtomicBool::new(false));
     let accept_busy = busy.clone();
-    let (tx, rx) = mpsc::sync_channel::<TcpStream>(1);
+    // Accepted clients are handed over in a slot this thread polls, not in a
+    // `std::sync::mpsc` channel: creating one puts a value aligned to 64
+    // bytes on the stack, and the Xtensa compiler realigns such a frame by
+    // adding to the stack pointer without `movsp`, which can restore a
+    // caller's registers from the wrong place.
+    let accepted: Arc<Mutex<Option<TcpStream>>> = Arc::new(Mutex::new(None));
+    let accepted2 = accepted.clone();
     crate::platform::spawn_thread(
         &format!("bridge-accept{port}"),
         crate::platform::small_ram(6 * 1024, 3 * 1024),
@@ -123,9 +128,8 @@ pub fn run<S: Serial>(node: Node, serial: S, port: u16) -> Result<()> {
                 conn.close();
                 continue;
             }
-            if tx.send(conn).is_err() {
-                break;
-            }
+            // `busy` keeps the slot to one client.
+            *accepted2.lock().unwrap() = Some(conn);
         }),
     )?;
     // Serial -> TCP, one thread for every session: a thread made and ended
@@ -134,10 +138,7 @@ pub fn run<S: Serial>(node: Node, serial: S, port: u16) -> Result<()> {
     // after some 150 connections.
     //
     // The session is handed over in a slot the thread looks at, and the end
-    // is an atomic flag the session polls. Handing it over through a channel
-    // (each side parked until the other wakes it) corrupted this thread's
-    // stack on the ESP32-S3 every few hundred sessions: a pointer on it read
-    // back as null.
+    // is an atomic flag the session polls.
     let slot: Arc<Mutex<Option<RxJob>>> = Arc::new(Mutex::new(None));
     let slot2 = slot.clone();
     let serial2 = serial.clone();
@@ -157,11 +158,14 @@ pub fn run<S: Serial>(node: Node, serial: S, port: u16) -> Result<()> {
         }),
     )?;
     loop {
-        let conn = rx
-            .recv()
-            .map_err(|_| anyhow!("bridge: accept thread exited"))?;
-        serve(&serial, conn, port, &slot);
-        busy.store(false, Ordering::SeqCst);
+        let conn = accepted.lock().unwrap().take();
+        match conn {
+            Some(conn) => {
+                serve(&serial, conn, port, &slot);
+                busy.store(false, Ordering::SeqCst);
+            }
+            None => std::thread::sleep(Duration::from_millis(20)),
+        }
     }
 }
 
