@@ -64,3 +64,11 @@ CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
 
 # ---- Size ----
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
+
+# ---- Speed (ESP32-S3; the C3 has neither option and ignores them) ----
+# Every USB/IP transfer goes through WireGuard and the TCP stack twice, and
+# most of that time was spent fetching code from flash: a 32 KB instruction
+# cache took a round trip from 4.9 to 4.2 ms, 240 MHz from 5.3 to 4.9 ms
+# (YD-ESP32-S3 N8R2). The cache costs 16 KB of internal RAM.
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+CONFIG_ESP32S3_INSTRUCTION_CACHE_32KB=y

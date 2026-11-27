@@ -19,9 +19,12 @@ rustflags = ["--cfg", "espidf_time64", "-C", "target-feature=-s32c1i"]
 
 # The XIAO ESP32C3: build with `--target riscv32imc-esp-espidf` and MCU=esp32c3
 # in the environment (it overrides the value below).
+# It is built for size: its stacks are sized from what each thread was seen
+# to use, and the release profile's opt-level 3 inlines more (this flag comes
+# after the profile's and wins).
 [target.riscv32imc-esp-espidf]
 linker = "ldproxy"
-rustflags = ["--cfg", "espidf_time64"]
+rustflags = ["--cfg", "espidf_time64", "-C", "opt-level=s"]
 
 [unstable]
 build-std = ["std", "panic_abort"]

@@ -300,8 +300,8 @@ One PC imports the device at a time.
 Isochronous endpoints (audio, video) are not supported.
 The same limit of eight host pipes applies: the interfaces the PC uses are claimed as their endpoints are first used.
 
-The board's USB host runs at full speed (12 Mbit/s), and every transfer makes a round trip over Wi-Fi and the tailnet, about 10 ms on a home network.
-Tools that wait for each answer before the next command, as debug probe tools do, are slow: through an MCU-Link, probe-rs reads memory at about 1.8 KB/s and writes and verifies flash at about 230 bytes/s.
+The board's USB host runs at full speed (12 Mbit/s), and every transfer makes a round trip over Wi-Fi and the tailnet, about 7.5 ms on a home network.
+Tools that wait for each answer before the next command, as debug probe tools do, are slow: through an MCU-Link, probe-rs reads memory at about 2.5 KB/s and writes and verifies flash at about 310 bytes/s.
 
 A debug probe made for high speed can announce CMSIS-DAP packets larger than its full-speed endpoint.
 The MCU-Link (firmware V3.128) announces 512 bytes, then runs each 64-byte USB packet of a longer command as a command of its own.

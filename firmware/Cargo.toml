@@ -11,7 +11,11 @@ name = "serial-over-tailnet-firmware"
 harness = false
 
 [profile.release]
-opt-level = "s"
+# Built for speed: every USB/IP transfer and bridged byte goes through
+# WireGuard, smoltcp and our own code, and on the ESP32-S3 "s" made each
+# round trip 15 % slower. The XIAO ESP32C3, whose stacks are sized
+# tightly, is built with "s" (.cargo/config.toml).
+opt-level = 3
 debug = true
 
 [profile.dev]
