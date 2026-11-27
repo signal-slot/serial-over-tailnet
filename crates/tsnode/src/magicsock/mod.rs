@@ -118,6 +118,9 @@ struct Peer {
     /// The NaCl box between our disco key and `disco`, with the disco key
     /// it was made for; made the first time the peer is pinged or pings.
     disco_box: Option<Box<([u8; 32], NaclBox)>>,
+    /// The tunnel's receiver indices as they are in `by_index`, so that
+    /// the table is rewritten only when they change.
+    indexed: Vec<u32>,
 }
 
 impl Peer {
@@ -174,6 +177,10 @@ pub struct MagicCore {
     last_stun: Option<Instant>,
     transmits: VecDeque<Transmit>,
     events: VecDeque<Event>,
+    /// The last destination routed and its peer: looking it up walks every
+    /// peer's allowed IPs, which took about 200 us per packet on an
+    /// ESP32-S3 with 57 peers. Cleared whenever peers change.
+    last_route: Option<(IpAddr, [u8; 32])>,
 }
 
 impl MagicCore {
@@ -198,6 +205,7 @@ impl MagicCore {
             last_stun: None,
             transmits: VecDeque::new(),
             events: VecDeque::new(),
+            last_route: None,
         }
     }
 
@@ -339,13 +347,15 @@ impl MagicCore {
     pub fn set_peers(&mut self, nodes: Vec<Box<Node>>) {
         let mut old = core::mem::take(&mut self.peers);
         self.by_index.clear();
+        self.last_route = None;
         for n in nodes {
             let Some(key) = n.key else {
                 continue;
             };
             let mut peer = old.remove(&key).unwrap_or_else(|| new_peer(key));
             apply_node(&mut peer, *n);
-            for idx in peer.tunn.iter().flat_map(|t| t.local_indices()) {
+            peer.indexed = peer.tunn.iter().flat_map(|t| t.local_indices()).collect();
+            for &idx in &peer.indexed {
                 self.by_index.insert(idx, key);
             }
             self.peers.insert(key, peer);
@@ -368,6 +378,7 @@ impl MagicCore {
     }
 
     pub fn peers_changed(&mut self, nodes: Vec<Box<Node>>) {
+        self.last_route = None;
         for n in nodes {
             let Some(key) = n.key else {
                 continue;
@@ -426,6 +437,7 @@ impl MagicCore {
     }
 
     fn remove_peer(&mut self, key: [u8; 32]) {
+        self.last_route = None;
         if self.peers.remove(&key).is_some() {
             self.by_index.retain(|_, k| *k != key);
         }
@@ -436,9 +448,16 @@ impl MagicCore {
     /// Sends an IP packet produced by the local stack to the right peer.
     pub fn send_ip(&mut self, pkt: &[u8], now: Instant) {
         let Some(dst) = ip_dst(pkt) else { return };
-        let Some(key) = self.route(dst) else {
-            trace!("magicsock: no peer for {dst}");
-            return;
+        let key = match self.last_route {
+            Some((ip, key)) if ip == dst => key,
+            _ => {
+                let Some(key) = self.route(dst) else {
+                    trace!("magicsock: no peer for {dst}");
+                    return;
+                };
+                self.last_route = Some((dst, key));
+                key
+            }
         };
         let (local, wall) = (&self.node_key, self.wall);
         let Some(peer) = self.peers.get_mut(&key) else {
@@ -453,14 +472,27 @@ impl MagicCore {
         self.maybe_start_discovery(key, now);
     }
 
+    /// Brings `by_index` up to date with the peer's tunnel. Called for every
+    /// packet; the table (every peer's indices) is walked only when the
+    /// indices changed, which took about 100 us on an ESP32-S3.
     fn refresh_indices(&mut self, key: [u8; 32]) {
-        if let Some(p) = self.peers.get(&key) {
-            let current: Vec<u32> = p.tunn.iter().flat_map(|t| t.local_indices()).collect();
-            self.by_index
-                .retain(|idx, k| *k != key || current.contains(idx));
-            for idx in current {
-                self.by_index.insert(idx, key);
-            }
+        let Some(p) = self.peers.get_mut(&key) else {
+            return;
+        };
+        let unchanged = p
+            .tunn
+            .iter()
+            .flat_map(|t| t.local_indices())
+            .eq(p.indexed.iter().copied());
+        if unchanged {
+            return;
+        }
+        p.indexed = p.tunn.iter().flat_map(|t| t.local_indices()).collect();
+        let current = &p.indexed;
+        self.by_index
+            .retain(|idx, k| *k != key || current.contains(idx));
+        for &idx in current {
+            self.by_index.insert(idx, key);
         }
     }
 
@@ -1077,6 +1109,7 @@ fn new_peer(key: [u8; 32]) -> Box<Peer> {
         last_cmm: None,
         last_activity: None,
         disco_box: None,
+        indexed: Vec::new(),
     })
 }
 
@@ -1255,6 +1288,39 @@ mod tests {
     }
 
     /// A UDP-in-IPv4 packet from `src` to `dst`, port 1000 to 2000.
+    #[test]
+    fn the_route_cache_follows_peer_changes() {
+        let mut c = core_at(1);
+        let t0 = Instant::from_millis(1000);
+        let with_ip = |id, key, ip: &str| {
+            let mut n = node(id, key, key);
+            n.allowed_ips = vec![(ip.parse().unwrap(), 32)];
+            n
+        };
+        c.set_peers(vec![
+            with_ip(1, 0xa1, "100.64.0.5"),
+            with_ip(2, 0xb2, "100.64.0.6"),
+        ]);
+        let pkt = ipv4([100, 64, 0, 1], [100, 64, 0, 5], b"x");
+        c.send_ip(&pkt, t0);
+        assert!(c.peers[&[0xa1; 32]].tunn.is_some());
+        assert!(c.peers[&[0xb2; 32]].tunn.is_none());
+
+        // 100.64.0.5 moves to the other peer: the cached route must not stick.
+        c.peers_changed(vec![
+            with_ip(1, 0xa1, "100.64.0.7"),
+            with_ip(2, 0xb2, "100.64.0.5"),
+        ]);
+        c.send_ip(&pkt, t0);
+        assert!(c.peers[&[0xb2; 32]].tunn.is_some());
+
+        // Nor once its peer is gone.
+        c.peers_removed(&[2]);
+        c.send_ip(&pkt, t0);
+        assert!(!c.peers.contains_key(&[0xb2; 32]));
+        assert_eq!(c.last_route, None);
+    }
+
     fn ipv4(src: [u8; 4], dst: [u8; 4], payload: &[u8]) -> Vec<u8> {
         let mut p = vec![0u8; 28];
         p[0] = 0x45;
