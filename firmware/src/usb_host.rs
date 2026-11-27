@@ -466,24 +466,7 @@ impl UsbHost {
             *slot = Some(inner.clone());
         }
 
-        unsafe {
-            let mut host_cfg: usb::usb_host_config_t = core::mem::zeroed();
-            host_cfg.intr_flags = sys::ESP_INTR_FLAG_LEVEL1 as i32;
-            esp_check(usb::usb_host_install(&host_cfg), "usb_host_install")?;
-        }
-        // USB host library event pump.
-        std::thread::Builder::new()
-            .name("usb-events".into())
-            .stack_size(4 * 1024)
-            .spawn(|| unsafe {
-                loop {
-                    let mut flags: u32 = 0;
-                    usb::usb_host_lib_handle_events(u32::MAX, &mut flags);
-                    if flags & usb::USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS != 0 {
-                        usb::usb_host_device_free_all();
-                    }
-                }
-            })?;
+        install_host()?;
         unsafe {
             let mut drv: usb::cdc_acm_host_driver_config_t = core::mem::zeroed();
             // The data callback runs on this task (FTDI status stripping,
@@ -1241,6 +1224,91 @@ impl UsbSerial {
 
 /// Raw DWC-OTG host port status (HPRT register), for diagnostics:
 /// whether the port is powered and whether a device's pull-up is seen.
+/// How long a connected device may stay without being enumerated before the
+/// port is powered off and on; doubled after each try that did not help.
+const ENUM_RETRY_FIRST: Duration = Duration::from_secs(3);
+const ENUM_RETRY_MAX: Duration = Duration::from_secs(60);
+/// How long the port stays off for it.
+const PORT_OFF_TIME: Duration = Duration::from_millis(500);
+
+/// Installs the USB host library and starts `usb-events`, which runs it.
+///
+/// When enumeration fails, ESP-IDF 5.3 leaves the device connected to the
+/// port and never tries again. It happened when the board restarted while
+/// the target's debug probe stayed powered from its own supply ("USBH: Dev 1
+/// EP 0 Error", then no device until the cable was replugged). So
+/// `usb-events` also watches the port: a device connected for a while that
+/// is not enumerated gets its port powered off and on, which makes the host
+/// see it arrive again.
+pub fn install_host() -> Result<()> {
+    unsafe {
+        let mut host_cfg: usb::usb_host_config_t = core::mem::zeroed();
+        host_cfg.intr_flags = sys::ESP_INTR_FLAG_LEVEL1 as i32;
+        esp_check(usb::usb_host_install(&host_cfg), "usb_host_install")?;
+    }
+    std::thread::Builder::new()
+        .name("usb-events".into())
+        .stack_size(4 * 1024)
+        .spawn(|| {
+            let mut stuck_since: Option<Instant> = None;
+            let mut wait = ENUM_RETRY_FIRST;
+            let mut powered_off: Option<Instant> = None;
+            loop {
+                let mut flags: u32 = 0;
+                unsafe {
+                    // Wakes at least ten times a second to look at the port.
+                    usb::usb_host_lib_handle_events(sys::configTICK_RATE_HZ / 10, &mut flags);
+                    if flags & usb::USB_HOST_LIB_EVENT_FLAGS_NO_CLIENTS != 0 {
+                        usb::usb_host_device_free_all();
+                    }
+                }
+                // The power comes back only after the library has handled
+                // the disconnection. Switched on at once, the port stayed
+                // off (seen: "port power=0" afterwards).
+                if let Some(off) = powered_off {
+                    if off.elapsed() >= PORT_OFF_TIME {
+                        let rc = unsafe { usb::usb_host_lib_set_root_port_power(true) };
+                        if rc == sys::ESP_OK {
+                            powered_off = None;
+                        } else {
+                            warn!("usb: the port could not be powered on (esp_err {rc}); trying again");
+                            powered_off = Some(Instant::now());
+                        }
+                    }
+                    continue;
+                }
+                let mut addr = [0u8; 1];
+                let mut n: i32 = 0;
+                unsafe { usb::usb_host_device_addr_list_fill(1, addr.as_mut_ptr(), &mut n) };
+                if !root_port_connected() || n > 0 {
+                    stuck_since = None;
+                    if n > 0 {
+                        wait = ENUM_RETRY_FIRST;
+                    }
+                    continue;
+                }
+                let since = *stuck_since.get_or_insert_with(Instant::now);
+                if since.elapsed() >= wait {
+                    warn!(
+                        "usb: a device has been connected for {} s without being enumerated; powering the port off and on",
+                        wait.as_secs()
+                    );
+                    unsafe { usb::usb_host_lib_set_root_port_power(false) };
+                    powered_off = Some(Instant::now());
+                    stuck_since = None;
+                    wait = (wait * 2).min(ENUM_RETRY_MAX);
+                }
+            }
+        })?;
+    Ok(())
+}
+
+/// Bit 0 of the OTG controller's host port register: a device is attached.
+fn root_port_connected() -> bool {
+    const USB_HPRT_REG: *const u32 = 0x6008_0440 as *const u32;
+    unsafe { core::ptr::read_volatile(USB_HPRT_REG) & 1 != 0 }
+}
+
 pub fn root_port_state() -> String {
     const USB_HPRT_REG: *const u32 = 0x6008_0440 as *const u32;
     let v = unsafe { core::ptr::read_volatile(USB_HPRT_REG) };
