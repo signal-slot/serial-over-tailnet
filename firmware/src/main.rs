@@ -20,6 +20,7 @@ mod board;
 mod bridge;
 mod button;
 mod console;
+mod flash_mode;
 mod nvs_store;
 mod platform;
 mod tls;
@@ -74,6 +75,7 @@ fn main() -> Result<()> {
 
     let peripherals = Peripherals::take()?;
     let sysloop = EspSystemEventLoop::take()?;
+    flash_mode::match_bootloader();
     let nvs_part = EspDefaultNvsPartition::take()?;
     let store = Arc::new(nvs_store::NvsStore::open(nvs_part.clone(), "tsusb")?);
 
