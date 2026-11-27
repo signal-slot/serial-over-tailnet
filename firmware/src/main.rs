@@ -28,8 +28,12 @@ mod uart_link;
 // Not for a board without a USB host (the ESP32-C3 has no host controller).
 #[cfg(not(board_xiao))]
 mod usb_host;
+#[cfg(not(board_xiao))]
+mod usbip;
 mod wifi;
 
+#[cfg(not(board_xiao))]
+use adapter_core::shell::USBIP;
 use adapter_core::shell::{Platform, Shell, DEFAULT_TCP_PORT};
 use anyhow::{Context, Result};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
@@ -228,8 +232,17 @@ fn main() -> Result<()> {
     if !setup_mode {
         let cfg = config.as_ref().expect("normal mode has a configuration");
         let base_port = cfg.tcp_port.unwrap_or(DEFAULT_TCP_PORT);
+        // `usbdrv usbip`: the whole device is exported over USB/IP instead.
         #[cfg(not(board_xiao))]
-        {
+        if cfg.usb_driver.as_deref() == Some(USBIP) {
+            let node = platform.node().expect("node started in normal mode");
+            let h = usbip::start(node).context("usbip")?;
+            if platform.usb.set(platform::UsbRole::UsbIp(h)).is_err() {
+                warn!("usb: host started twice");
+            }
+        }
+        #[cfg(not(board_xiao))]
+        if cfg.usb_driver.as_deref() != Some(USBIP) {
             let baud = cfg.baud_rate.unwrap_or(DEFAULT_BAUD);
             let forced = cfg
                 .usb_driver
@@ -261,7 +274,7 @@ fn main() -> Result<()> {
                 }),
             )
             .context("usb host")?;
-            if platform.usb.set(host).is_err() {
+            if platform.usb.set(platform::UsbRole::Serial(host)).is_err() {
                 warn!("usb: host started twice");
             }
         }

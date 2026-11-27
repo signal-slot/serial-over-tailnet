@@ -14,4 +14,5 @@ extern crate alloc;
 pub mod rfc2217;
 pub mod shell;
 pub mod usbdesc;
+pub mod usbip;
 pub mod usbserial;

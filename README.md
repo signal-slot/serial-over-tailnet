@@ -11,6 +11,7 @@ The project was called usb-serial-over-tailscale until November 2026.
 ```text
 Remote PC ──Tailscale / TCP:35930────▶ XIAO ESP32S3/C3 ──UART───▶ UART console of the target SBC
 Remote PC ──Tailscale / TCP:35930+n──▶ YD-ESP32-S3 ───USB host──▶ serial interface n of the target SBC
+Remote PC ──Tailscale / USB/IP 3240──▶ YD-ESP32-S3 ───USB host──▶ the whole USB device (a debug probe, for example)
 ```
 
 Everything a Tailscale node needs (control protocol, WireGuard, DERP, NAT traversal) is implemented in Rust in this repository.
@@ -28,6 +29,7 @@ Working end to end:
 - RFC 2217 sessions against both USB targets: baud rate and framing changes, DTR and RTS, break and purge from pyserial.
 - On the FT4232H, three ports claimed at once and a client on the fourth port refused.
 - Recovery after adapter reboot, Wi-Fi reconnection and USB replug.
+- With a YD-ESP32-S3 in USB/IP mode: the MCU-Link of an FRDM-MCXN947 attached on a Linux PC with `usbip attach`, probe-rs erasing the MCXN947, writing 712 KB to its flash and verifying it, and the board's console on the MCU-Link's serial port.
 
 Not yet:
 
@@ -232,6 +234,7 @@ The main commands are listed below; `help` prints the full list.
 | `wifi list`, `wifi forget <ssid>` | List and remove stored networks. |
 | `port <n>`, `baud <rate>` | TCP port (default 35930; on the YD-ESP32-S3, USB interface n of the target is served on port+n) and baud rate of the target (default 115200). |
 | `usbdrv <auto\|cdc\|ftdi\|cp210x\|ch34x>` | YD-ESP32-S3 only: USB-serial bridge chip. The default detects it from VID and PID. |
+| `usbdrv usbip` | YD-ESP32-S3 only: export the whole USB device over USB/IP instead (see "USB/IP"). `usbdrv auto` goes back to the serial bridge. Takes effect after `reboot`. |
 | `status`, `reset`, `reboot` | Show status, erase configuration and keys, reboot. |
 
 On the XIAO the shell is always on the USB port, so any command, `setup` included, can be run at any time; the log goes to UART0 on pins D6 (TX) and D7 (RX) at 115200 bps.
@@ -280,6 +283,32 @@ The USB interface is claimed when the first client connects to its port and stay
 The ESP32-S3's host controller has eight pipes, one for control and two per claimed interface (three for CDC-ACM), so at most three ports of an FT4232H can be claimed, and the claims last until the device is unplugged or the adapter reboots. A client on a fourth port is told `usb: cannot open the interface: no free USB host pipe` and closed.
 `status` on the shell lists the interfaces with their ports, marks the open ones with their line settings and the idle claimed ones with `claimed`.
 
+### USB/IP
+
+With `usbdrv usbip`, a YD-ESP32-S3 exports the whole device on its USB port over USB/IP (TCP 3240), instead of bridging its serial interfaces.
+A Linux PC on the tailnet attaches it with the standard `usbip` tool, and from then on the PC's own drivers and tools see the device as if it were plugged in: a debug probe's CMSIS-DAP or vendor protocol, and its serial ports.
+
+```bash
+sudo modprobe vhci-hcd
+usbip list -r target-console                 # the device, as bus ID 1-1
+sudo usbip attach -r target-console -b 1-1
+probe-rs list                                # the probe is there
+sudo usbip detach -p 0                       # port number from `usbip port`
+```
+
+One PC imports the device at a time.
+Isochronous endpoints (audio, video) are not supported.
+The same limit of eight host pipes applies: the interfaces the PC uses are claimed as their endpoints are first used.
+
+The board's USB host runs at full speed (12 Mbit/s), and every transfer makes a round trip over Wi-Fi and the tailnet, about 10 ms on a home network.
+Tools that wait for each answer before the next command, as debug probe tools do, are slow: through an MCU-Link, probe-rs reads memory at about 1.8 KB/s and writes and verifies flash at about 230 bytes/s.
+
+A debug probe made for high speed can announce CMSIS-DAP packets larger than its full-speed endpoint.
+The MCU-Link (firmware V3.128) announces 512 bytes, then runs each 64-byte USB packet of a longer command as a command of its own.
+The board lowers the packet size in the probe's DAP_Info answer to the endpoint's, and says so in its log.
+
+If enumerating the device fails (this happens to a probe with its own power supply when the board restarts), the board powers its USB port off and on after 3 seconds and tries again.
+
 ### Power and wiring
 
 **XIAO ESP32S3.**
@@ -296,6 +325,7 @@ The pad bypasses the diode between the board's 5 V and the native port, so the 5
 For flashing and setup, connect the COM port to the PC; if you use the native port for that instead, connect only that one.
 In normal operation, connect the COM port to power and the native port to the target.
 If the target is a CDC-ACM or FTDI-style bridge chip, that chip is usually bus-powered and needs this 5 V.
+A development board that powers itself from its debug port, such as an FRDM-MCXN947 with its MCU-Link, needs more than this 5 V can give: the probe does not enumerate, or the board keeps restarting. Power such a board from its own supply (another USB-C port of the board, or a charger) and connect only its debug port to the YD-ESP32-S3.
 
 ### A board that resets every few seconds
 
@@ -354,6 +384,7 @@ Flash with esptool as above: `espflash` does not accept this firmware's image.
 - The USB host relies on the CDC-ACM host driver's fallback of opening any interface with two bulk endpoints; FTDI, CP210x and CH34x get only their chip-specific setup through vendor control transfers.
 - The interface stays claimed between sessions because of the USB data toggle. A pipe the host creates starts at DATA0, while the device keeps the toggle of each endpoint from the session before. Claiming the interface per session made the device acknowledge and drop the first packet of every other session, with no error on the host: the first keystroke vanished. Asking the device to reset its toggles with CLEAR_FEATURE(ENDPOINT_HALT) was tried and does not work on the Debug Probe (TinyUSB), so the pipes are kept instead.
 - A claim is not released while the device is attached, so a fourth port cannot take the pipes of an idle one. Closing an interface of a device that keeps answering IN polls (an FTDI chip does, every 2 ms) races with the CDC driver's task: the driver halts and clears the pipe and releases the interface while its task resubmits the poll, and the release or the host controller's interrupt handler aborts the firmware about one close in ten. Retrying the release and halting the pipes again from the closing thread (through a linker `--wrap`) and ESP-IDF v5.3.5 (espressif/esp-idf#17707) were tried and still crashed.
+- smoltcp sends a lost TCP segment again after one second at the earliest. A protocol that waits for each answer, such as USB/IP, stalls for that second every time Wi-Fi loses an answer, and probe-rs gives up after one second. The netstack therefore sends the last unacknowledged segment of each connection once more after max(200 ms, 2 × SRTT), as RFC 8985's tail loss probe does.
 - A break on a Linux console, or bytes sent at a lower baud rate than the console's, is a BREAK to the target: `agetty` then cycles through its baud rates, and the kernel's SysRq takes the next byte as a command, which can reboot the target. Test line settings against a console that has nothing to lose.
 
 ## Out of scope

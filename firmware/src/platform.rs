@@ -5,6 +5,8 @@ use crate::nvs_store::{self, NvsStore};
 use crate::tls::EspDialer;
 #[cfg(not(board_xiao))]
 use crate::usb_host::UsbHost;
+#[cfg(not(board_xiao))]
+use crate::usbip::UsbIpHandle;
 use crate::wifi::WifiManager;
 use adapter_core::shell::{ApInfo, NodeState, Platform, SavedConfig, StatusSnapshot};
 use esp_idf_svc::sys;
@@ -15,13 +17,21 @@ use std::time::Duration;
 use tsnode::net::Spawner;
 use tsnode::node::{Node, NodeConfig, NodeState as TsState};
 
+/// What the USB host port does: bridge the device's serial interfaces, or
+/// export the whole device over USB/IP (`usbdrv usbip`).
+#[cfg(not(board_xiao))]
+pub enum UsbRole {
+    Serial(UsbHost),
+    UsbIp(UsbIpHandle),
+}
+
 pub struct EspPlatform {
     pub store: Arc<NvsStore>,
     pub wifi: Arc<WifiManager>,
     pub node: Mutex<Option<Node>>,
     /// The USB host, set once it is started (normal mode only).
     #[cfg(not(board_xiao))]
-    pub usb: OnceLock<UsbHost>,
+    pub usb: OnceLock<UsbRole>,
     pub setup_mode: bool,
     pub board: crate::board::Board,
 }
@@ -124,7 +134,12 @@ impl Platform for EspPlatform {
             usb: "console (this board has no USB host)".into(),
             #[cfg(not(board_xiao))]
             usb: match self.usb.get() {
-                Some(h) => format!("{} ({})", h.describe(), crate::usb_host::root_port_state()),
+                Some(UsbRole::Serial(h)) => {
+                    format!("{} ({})", h.describe(), crate::usb_host::root_port_state())
+                }
+                Some(UsbRole::UsbIp(h)) => {
+                    format!("{} ({})", h.describe(), crate::usb_host::root_port_state())
+                }
                 None if self.setup_mode => "device mode (setup console)".into(),
                 None => "starting".into(),
             },
@@ -369,6 +384,9 @@ fn task_name(name: &str) -> &'static core::ffi::CStr {
         ("shell-usb", c"shell-usb"),
         ("shell-uart", c"shell-uart"),
         ("wifi-connect", c"wifi-connect"),
+        ("usbip-client", c"usbip-client"),
+        ("usbip-tx", c"usbip-tx"),
+        ("usbip", c"usbip"),
         ("wifi", c"wifi"),
     ];
     NAMES

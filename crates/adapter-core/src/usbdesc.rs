@@ -101,9 +101,120 @@ pub fn serial_interfaces(config: &[u8], vendor_serial: bool) -> Vec<u8> {
         .collect()
 }
 
+/// An endpoint of an interface's alternate setting.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Endpoint {
+    /// Address with the direction in bit 7.
+    pub address: u8,
+    /// Transfer type in bits 0 and 1 (0 control, 1 isochronous, 2 bulk,
+    /// 3 interrupt).
+    pub attributes: u8,
+    /// wMaxPacketSize without the high-bandwidth bits.
+    pub max_packet: u16,
+}
+
+/// The endpoints of alternate setting `alt` of interface `interface`.
+pub fn endpoints(config: &[u8], interface: u8, alt: u8) -> Vec<Endpoint> {
+    let mut out = Vec::new();
+    let mut inside = false;
+    let mut at = 0;
+    while at + 2 <= config.len() {
+        let len = config[at] as usize;
+        if len < 2 || at + len > config.len() {
+            break;
+        }
+        let d = &config[at..at + len];
+        match d[1] {
+            DESC_INTERFACE if len >= 9 => inside = d[2] == interface && d[3] == alt,
+            DESC_ENDPOINT if len >= 7 && inside => out.push(Endpoint {
+                address: d[2],
+                attributes: d[3],
+                max_packet: u16::from_le_bytes([d[4], d[5]]) & 0x07ff,
+            }),
+            _ => {}
+        }
+        at += len;
+    }
+    out
+}
+
+/// The interface an endpoint address belongs to, given the alternate
+/// setting each interface is in.
+pub fn interface_of(
+    config: &[u8],
+    address: u8,
+    alt_of: impl Fn(u8) -> u8,
+) -> Option<(u8, Endpoint)> {
+    let mut found = None;
+    let mut current: Option<u8> = None;
+    let mut at = 0;
+    while at + 2 <= config.len() {
+        let len = config[at] as usize;
+        if len < 2 || at + len > config.len() {
+            break;
+        }
+        let d = &config[at..at + len];
+        match d[1] {
+            DESC_INTERFACE if len >= 9 => {
+                current = (d[3] == alt_of(d[2])).then_some(d[2]);
+            }
+            DESC_ENDPOINT if len >= 7 && d[2] == address => {
+                if let Some(i) = current {
+                    found = Some((
+                        i,
+                        Endpoint {
+                            address,
+                            attributes: d[3],
+                            max_packet: u16::from_le_bytes([d[4], d[5]]) & 0x07ff,
+                        },
+                    ));
+                    break;
+                }
+            }
+            _ => {}
+        }
+        at += len;
+    }
+    found
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn endpoints_of_an_interface_and_back() {
+        let c = config(&[
+            ftdi_port(0),
+            interface(1, 0, CLASS_VENDOR, 0xff),
+            [
+                interface(1, 1, CLASS_VENDOR, 0xff),
+                endpoint(0x83, XFER_BULK),
+                endpoint(0x04, XFER_BULK),
+            ]
+            .concat(),
+        ]);
+        let e = endpoints(&c, 0, 0);
+        assert_eq!(
+            e.iter()
+                .map(|e| (e.address, e.max_packet))
+                .collect::<Vec<_>>(),
+            vec![(0x81, 64), (0x02, 64)]
+        );
+        assert!(endpoints(&c, 1, 0).is_empty());
+        assert_eq!(endpoints(&c, 1, 1).len(), 2);
+        assert_eq!(interface_of(&c, 0x02, |_| 0).map(|(i, _)| i), Some(0));
+        // 0x83 exists only in interface 1's alternate setting 1.
+        assert_eq!(interface_of(&c, 0x83, |_| 0), None);
+        assert_eq!(
+            interface_of(&c, 0x83, |i| i).map(|(i, e)| (i, e.attributes)),
+            Some((1, 2))
+        );
+        for cut in 0..c.len() {
+            let _ = interface_of(&c[..cut], 0x83, |i| i);
+            let _ = endpoints(&c[..cut], 1, 1);
+        }
+    }
 
     fn interface(number: u8, alt: u8, class: u8, subclass: u8) -> Vec<u8> {
         vec![9, DESC_INTERFACE, number, alt, 0, class, subclass, 0, 0]

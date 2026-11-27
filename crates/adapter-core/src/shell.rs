@@ -102,6 +102,9 @@ pub trait Platform {
 /// Raspberry Pi Debug Probe on 35931 and the Verdin console of a Toradex
 /// Dahlia on 35933.
 pub const DEFAULT_TCP_PORT: u16 = 35930;
+/// `usbdrv` value that exports the whole USB device over USB/IP (TCP 3240)
+/// instead of bridging its serial interfaces.
+pub const USBIP: &str = "usbip";
 
 const PROMPT: &str = "> ";
 const LOGIN_WAIT: Duration = Duration::from_secs(600);
@@ -313,11 +316,11 @@ impl<'a, C: Console, P: Platform> Shell<'a, C, P> {
             },
             "usbdrv" => match args.first().copied() {
                 Some("auto") => self.set_field(|c| c.usb_driver = None),
-                Some(d @ ("cdc" | "ftdi" | "cp210x" | "ch34x")) => {
+                Some(d @ ("cdc" | "ftdi" | "cp210x" | "ch34x" | USBIP)) => {
                     let d = d.to_string();
                     self.set_field(|c| c.usb_driver = Some(d))
                 }
-                _ => self.line("usage: usbdrv <auto|cdc|ftdi|cp210x|ch34x>"),
+                _ => self.line("usage: usbdrv <auto|cdc|ftdi|cp210x|ch34x|usbip>"),
             },
             "baud" => match args.first().and_then(|b| b.parse::<u32>().ok()) {
                 Some(b) if b != 0 => self.set_field(|c| c.baud_rate = Some(b)),
@@ -360,7 +363,8 @@ impl<'a, C: Console, P: Platform> Shell<'a, C, P> {
             "login              register with Tailscale (prints approval URL)",
             "port <n>           first TCP port (default 35930); USB interface n is served on port+n",
             "baud <rate>        USB serial baud rate (default 115200)",
-            "usbdrv <name>      force the USB serial driver (auto/cdc/ftdi/cp210x/ch34x)",
+            "usbdrv <name>      force the USB serial driver (auto/cdc/ftdi/cp210x/ch34x),",
+            "                   or usbip: export the whole device over USB/IP (port 3240)",
             "reset              erase configuration and identity",
             "reboot             restart",
         ] {
@@ -844,6 +848,38 @@ mod tests {
         assert!(!*plat.rebooted.borrow());
         // Password was masked.
         assert!(!out.contains("secret123"));
+    }
+
+    #[test]
+    fn usbdrv_selects_usbip_and_back() {
+        let plat = FakePlatform::default();
+        let mut con = FakeConsole {
+            input: b"usbdrv usbip\rusbdrv nope\r".to_vec().into(),
+            output: String::new(),
+            strict: true,
+        };
+        {
+            let mut sh = Shell::new(&mut con, &plat);
+            for _ in 0..2 {
+                let cmd = read_line(sh.console, true, None, &mut sh.swallow_lf).unwrap();
+                sh.dispatch(&cmd);
+            }
+        }
+        assert_eq!(plat.config().unwrap().usb_driver.as_deref(), Some(USBIP));
+        assert!(con
+            .output
+            .contains("usage: usbdrv <auto|cdc|ftdi|cp210x|ch34x|usbip>"));
+        let mut con = FakeConsole {
+            input: b"usbdrv auto\r".to_vec().into(),
+            output: String::new(),
+            strict: true,
+        };
+        {
+            let mut sh = Shell::new(&mut con, &plat);
+            let cmd = read_line(sh.console, true, None, &mut sh.swallow_lf).unwrap();
+            sh.dispatch(&cmd);
+        }
+        assert_eq!(plat.config().unwrap().usb_driver, None);
     }
 
     #[test]
