@@ -180,41 +180,56 @@ pub fn x25519_generate() -> [u8; 32] {
     k
 }
 
-/// NaCl `crypto_box` seal (XSalsa20-Poly1305, 16-byte tag prefix), as used by
-/// Tailscale's disco messages and the DERP client handshake.
+/// NaCl `crypto_box` (XSalsa20-Poly1305, 16-byte tag prefix) between two
+/// keys, as used by Tailscale's disco messages and the DERP client
+/// handshake. Making one does the X25519 agreement, which takes about 33 ms
+/// on an ESP32-S3: keep it for a peer you talk to more than once.
+pub struct NaclBox(crypto_box::SalsaBox);
+
+impl NaclBox {
+    pub fn new(our_secret: &[u8; 32], their_public: &[u8; 32]) -> Self {
+        NaclBox(crypto_box::SalsaBox::new(
+            &crypto_box::PublicKey::from(*their_public),
+            &crypto_box::SecretKey::from(*our_secret),
+        ))
+    }
+
+    pub fn seal(&self, nonce: &[u8; 24], msg: &[u8]) -> Vec<u8> {
+        use crypto_box::aead::Aead as _;
+        self.0
+            .encrypt(crypto_box::Nonce::from_slice(nonce), msg)
+            .expect("nacl box seal")
+    }
+
+    pub fn open(&self, nonce: &[u8; 24], sealed: &[u8]) -> Result<Vec<u8>, CryptoError> {
+        use crypto_box::aead::Aead as _;
+        if sealed.len() < TAG_LEN {
+            return Err(CryptoError);
+        }
+        self.0
+            .decrypt(crypto_box::Nonce::from_slice(nonce), sealed)
+            .map_err(|_| CryptoError)
+    }
+}
+
+/// One-off [`NaclBox::seal`].
 pub fn nacl_box_seal(
     our_secret: &[u8; 32],
     their_public: &[u8; 32],
     nonce: &[u8; 24],
     msg: &[u8],
 ) -> Vec<u8> {
-    use crypto_box::aead::Aead as _;
-    let sb = crypto_box::SalsaBox::new(
-        &crypto_box::PublicKey::from(*their_public),
-        &crypto_box::SecretKey::from(*our_secret),
-    );
-    let ct = sb
-        .encrypt(crypto_box::Nonce::from_slice(nonce), msg)
-        .expect("nacl box seal");
-    ct
+    NaclBox::new(our_secret, their_public).seal(nonce, msg)
 }
 
+/// One-off [`NaclBox::open`].
 pub fn nacl_box_open(
     our_secret: &[u8; 32],
     their_public: &[u8; 32],
     nonce: &[u8; 24],
     sealed: &[u8],
 ) -> Result<Vec<u8>, CryptoError> {
-    use crypto_box::aead::Aead as _;
-    if sealed.len() < TAG_LEN {
-        return Err(CryptoError);
-    }
-    let sb = crypto_box::SalsaBox::new(
-        &crypto_box::PublicKey::from(*their_public),
-        &crypto_box::SecretKey::from(*our_secret),
-    );
-    sb.decrypt(crypto_box::Nonce::from_slice(nonce), sealed)
-        .map_err(|_| CryptoError)
+    NaclBox::new(our_secret, their_public).open(nonce, sealed)
 }
 
 #[cfg(test)]

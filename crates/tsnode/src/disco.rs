@@ -1,7 +1,7 @@
 //! Tailscale "disco" NAT-traversal messages (ping / pong / call-me-maybe),
 //! sealed with NaCl box between disco keys.
 
-use crate::crypto::{nacl_box_open, nacl_box_seal, random_array, CryptoError};
+use crate::crypto::{random_array, CryptoError, NaclBox};
 use alloc::vec::Vec;
 use core::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
@@ -154,37 +154,26 @@ pub fn sender_key(p: &[u8]) -> Option<[u8; 32]> {
 }
 
 /// Builds a full disco packet: magic || our disco pub || nonce || box(msg).
-pub fn seal(
-    our_disco: &crate::keys::KeyPair,
-    their_disco_pub: &[u8; 32],
-    msg: &Message,
-) -> Vec<u8> {
+/// `nacl` is the box between our disco key and the receiver's.
+pub fn seal(our_disco_pub: &[u8; 32], nacl: &NaclBox, msg: &Message) -> Vec<u8> {
     let nonce: [u8; NONCE_LEN] = random_array();
-    let sealed = nacl_box_seal(our_disco.secret(), their_disco_pub, &nonce, &msg.marshal());
+    let sealed = nacl.seal(&nonce, &msg.marshal());
     let mut out = Vec::with_capacity(HEADER_LEN + sealed.len());
     out.extend_from_slice(MAGIC);
-    out.extend_from_slice(our_disco.public());
+    out.extend_from_slice(our_disco_pub);
     out.extend_from_slice(&nonce);
     out.extend_from_slice(&sealed);
     out
 }
 
-/// Opens a disco packet whose sender key was already looked up.
-pub fn open(
-    our_disco: &crate::keys::KeyPair,
-    sender_disco_pub: &[u8; 32],
-    p: &[u8],
-) -> Result<Message, CryptoError> {
+/// Opens a disco packet with the box between our disco key and its sender's
+/// (looked up from [`sender_key`]).
+pub fn open(nacl: &NaclBox, p: &[u8]) -> Result<Message, CryptoError> {
     if !is_disco(p) {
         return Err(CryptoError);
     }
     let nonce: [u8; NONCE_LEN] = p[MAGIC.len() + KEY_LEN..HEADER_LEN].try_into().unwrap();
-    let pt = nacl_box_open(
-        our_disco.secret(),
-        sender_disco_pub,
-        &nonce,
-        &p[HEADER_LEN..],
-    )?;
+    let pt = nacl.open(&nonce, &p[HEADER_LEN..])?;
     Message::parse(&pt).ok_or(CryptoError)
 }
 
@@ -225,13 +214,16 @@ mod tests {
                 ],
             },
         ];
+        let a_to_b = NaclBox::new(a.secret(), b.public());
+        let b_from_a = NaclBox::new(b.secret(), a.public());
+        let wrong = NaclBox::new(a.secret(), a.public());
         for m in msgs {
-            let pkt = seal(&a, b.public(), &m);
+            let pkt = seal(a.public(), &a_to_b, &m);
             assert!(is_disco(&pkt));
             assert_eq!(sender_key(&pkt).unwrap(), *a.public());
-            let got = open(&b, a.public(), &pkt).unwrap();
+            let got = open(&b_from_a, &pkt).unwrap();
             assert_eq!(got, m);
-            assert!(open(&a, a.public(), &pkt).is_err());
+            assert!(open(&wrong, &pkt).is_err());
         }
     }
 }

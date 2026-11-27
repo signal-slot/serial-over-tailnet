@@ -18,6 +18,7 @@ mod driver;
 #[cfg(feature = "std")]
 pub use driver::{guess_local_ip, IpSink, MagicSock};
 
+use crate::crypto::NaclBox;
 use crate::disco::{self, Message as DiscoMsg, TxId};
 use crate::keys::{short, KeyPair};
 use crate::stun;
@@ -114,9 +115,23 @@ struct Peer {
     last_heartbeat: Option<Instant>,
     last_cmm: Option<Instant>,
     last_activity: Option<Instant>,
+    /// The NaCl box between our disco key and `disco`, with the disco key
+    /// it was made for; made the first time the peer is pinged or pings.
+    disco_box: Option<Box<([u8; 32], NaclBox)>>,
 }
 
 impl Peer {
+    /// The box for disco messages with the peer's current disco key. The
+    /// X25519 behind it took about 33 ms on an ESP32-S3; done for every
+    /// ping, it held the core for up to 340 ms each second.
+    fn disco_box(&mut self, ours: &KeyPair) -> Option<&NaclBox> {
+        let theirs = self.disco?;
+        if self.disco_box.as_ref().map(|b| b.0) != Some(theirs) {
+            self.disco_box = Some(Box::new((theirs, NaclBox::new(ours.secret(), &theirs))));
+        }
+        self.disco_box.as_deref().map(|b| &b.1)
+    }
+
     /// The peer's WireGuard tunnel, made the first time it is needed.
     fn tunnel(&mut self, local: &KeyPair) -> &mut Tunn {
         let key = self.key;
@@ -471,10 +486,11 @@ impl MagicCore {
     }
 
     fn send_disco(&mut self, key: [u8; 32], path: Path, msg: &DiscoMsg, now: Instant) {
-        let Some(their_disco) = self.peers.get(&key).and_then(|p| p.disco) else {
+        let ours = &self.disco_key;
+        let Some(nacl) = self.peers.get_mut(&key).and_then(|p| p.disco_box(ours)) else {
             return;
         };
-        let pkt = disco::seal(&self.disco_key, &their_disco, msg);
+        let pkt = disco::seal(ours.public(), nacl, msg);
         self.send_on(key, path, pkt, now);
     }
 
@@ -687,7 +703,13 @@ impl MagicCore {
             trace!("magicsock: disco from unknown key {}", short(&sender));
             return;
         };
-        let msg = match disco::open(&self.disco_key, &sender, pkt) {
+        let ours = &self.disco_key;
+        let opened = self
+            .peers
+            .get_mut(&key)
+            .and_then(|p| p.disco_box(ours))
+            .map(|b| disco::open(b, pkt));
+        let msg = match opened.unwrap_or(Err(crate::crypto::CryptoError)) {
             Ok(m) => m,
             Err(_) => {
                 trace!("magicsock: disco open failed from {path:?}");
@@ -1054,6 +1076,7 @@ fn new_peer(key: [u8; 32]) -> Box<Peer> {
         last_heartbeat: None,
         last_cmm: None,
         last_activity: None,
+        disco_box: None,
     })
 }
 
