@@ -12,6 +12,7 @@
 
 #[cfg(feature = "std")]
 mod driver;
+mod tlp;
 #[cfg(feature = "std")]
 pub use driver::{NetStack, TcpListener, TcpStream};
 
@@ -124,6 +125,11 @@ pub struct NetCore {
     sockets: SocketSet<'static>,
     listeners: BTreeMap<ListenerId, Listener>,
     next_listener: u32,
+    tail_probe: tlp::TailProbe,
+    /// Segments the tail probe sends again, ahead of the stack's own.
+    probes: VecDeque<Vec<u8>>,
+    /// The time of the last poll, which is when its packets are sent.
+    now: Instant,
 }
 
 fn smol_instant(now: Instant) -> smoltcp::time::Instant {
@@ -186,6 +192,9 @@ impl NetCore {
             sockets: SocketSet::new(vec![]),
             listeners: BTreeMap::new(),
             next_listener: 0,
+            tail_probe: tlp::TailProbe::default(),
+            probes: VecDeque::new(),
+            now,
         }
     }
 
@@ -323,6 +332,10 @@ impl NetCore {
     /// Processes received packets and timers, and moves new connections to
     /// their listeners' accept queues.
     pub fn poll(&mut self, now: Instant) {
+        self.now = now;
+        for p in &self.device.rx {
+            self.tail_probe.on_receive(p, now);
+        }
         let _ = self
             .iface
             .poll(smol_instant(now), &mut self.device, &mut self.sockets);
@@ -357,18 +370,32 @@ impl NetCore {
                 }
             }
         }
+
+        // Copies go out as they are; `poll_transmit` does not record them.
+        let probes = self.tail_probe.poll(now);
+        self.probes.extend(probes);
     }
 
     /// The next IP packet to send to a peer.
     pub fn poll_transmit(&mut self) -> Option<Vec<u8>> {
-        self.device.tx.pop_front()
+        if let Some(p) = self.probes.pop_front() {
+            return Some(p);
+        }
+        let p = self.device.tx.pop_front()?;
+        self.tail_probe.on_transmit(&p, self.now);
+        Some(p)
     }
 
     /// How long until the stack's timers need a poll, if it has any.
     pub fn poll_delay(&mut self, now: Instant) -> Option<Duration> {
-        self.iface
+        let stack = self
+            .iface
             .poll_delay(smol_instant(now), &self.sockets)
-            .map(|d| Duration::from_micros(d.total_micros()))
+            .map(|d| Duration::from_micros(d.total_micros()));
+        match (stack, self.tail_probe.delay(now)) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        }
     }
 }
 
@@ -441,5 +468,36 @@ mod tests {
         assert!(b.status(s).closed);
         b.remove(s);
         b.unlisten(l);
+    }
+
+    #[test]
+    fn a_lost_answer_is_sent_again_well_before_smoltcps_one_second() {
+        let mut now = Instant::from_millis(1000);
+        let mut a = NetCore::new(1, now);
+        let mut b = NetCore::new(2, now);
+        a.set_addresses(&[("100.64.0.1".parse().unwrap(), 10)]);
+        b.set_addresses(&[("100.64.0.2".parse().unwrap(), 10)]);
+        let l = b.listen(3240).unwrap();
+        let c = a
+            .connect("100.64.0.2:3240".parse().unwrap(), 50000)
+            .unwrap();
+        exchange(&mut a, &mut b, now);
+        let (s, _) = b.accept(l).unwrap();
+
+        // Request, then an answer the network loses.
+        a.send(c, b"request");
+        exchange(&mut a, &mut b, now);
+        let mut buf = [0u8; 64];
+        assert_eq!(b.recv(s, &mut buf), 7);
+        b.send(s, b"answer");
+        b.poll(now);
+        while b.poll_transmit().is_some() {}
+
+        let delay = b.poll_delay(now).unwrap();
+        assert!(delay <= Duration::from_millis(200), "{delay:?}");
+        now += Duration::from_millis(200);
+        exchange(&mut a, &mut b, now);
+        assert_eq!(a.recv(c, &mut buf), 6);
+        assert_eq!(&buf[..6], b"answer");
     }
 }
