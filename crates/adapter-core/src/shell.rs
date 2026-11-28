@@ -151,7 +151,8 @@ pub fn read_line(
                 return Some(String::from_utf8_lossy(&line).trim().to_string());
             }
             0x08 | 0x7f => {
-                if line.pop().is_some() && echo {
+                // A hidden entry shows one '*' per character: erase that too.
+                if line.pop().is_some() {
                     console.write("\x08 \x08");
                 }
             }
@@ -811,6 +812,19 @@ mod tests {
                 ("far".to_string(), -89)
             ]
         );
+    }
+
+    #[test]
+    fn backspace_erases_a_hidden_character_on_screen_too() {
+        let mut con = FakeConsole {
+            input: b"abx\x7fc\r".iter().copied().collect(),
+            output: String::new(),
+            strict: false,
+        };
+        let mut swallow = false;
+        let line = read_line(&mut con, false, None, &mut swallow);
+        assert_eq!(line.as_deref(), Some("abc"));
+        assert_eq!(con.output, "***\x08 \x08*\r\n");
     }
 
     #[test]
