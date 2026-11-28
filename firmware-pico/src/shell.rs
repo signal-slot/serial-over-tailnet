@@ -83,8 +83,9 @@ const K_PORT: &str = "port";
 const K_BAUD: &str = "baud";
 const K_USBDRV: &str = "usbdrv";
 
-/// The shell's settings as stored; `None` until a Wi-Fi network is known,
-/// as on the ESP32.
+/// The shell's settings as stored; `None` until something is saved, as on
+/// the ESP32. Settings made before any Wi-Fi network count: the wizard saves
+/// what this returns, and dropping them there lost them.
 pub fn saved_config() -> Option<SavedConfig> {
     let v = config::values();
     let networks: Vec<WifiNetwork> = v
@@ -98,17 +99,20 @@ pub fn saved_config() -> Option<SavedConfig> {
             })
         })
         .collect();
-    if networks.is_empty() {
-        return None;
-    }
-    Some(SavedConfig {
+    let cfg = SavedConfig {
         networks,
         hostname: v.get(K_HOST).cloned().unwrap_or_default(),
         auth_key: v.get(K_AUTHKEY).cloned(),
         tcp_port: v.get(K_PORT).and_then(|p| p.parse().ok()),
         baud_rate: v.get(K_BAUD).and_then(|b| b.parse().ok()),
         usb_driver: v.get(K_USBDRV).cloned(),
-    })
+    };
+    (cfg != SavedConfig::default()).then_some(cfg)
+}
+
+/// Whether a Wi-Fi network is known.
+pub fn has_wifi() -> bool {
+    saved_config().is_some_and(|c| !c.networks.is_empty())
 }
 
 /// Writes `c` into the stored values, replacing the shell's settings.
@@ -255,7 +259,7 @@ impl Platform for PicoPlatform {
 pub fn run() -> ! {
     let mut console = UsbConsole;
     let platform = PicoPlatform;
-    let first_setup = saved_config().is_none();
+    let first_setup = !has_wifi();
     let mut shell = Shell::new(&mut console, &platform);
     shell.run(first_setup, false);
     unreachable!()

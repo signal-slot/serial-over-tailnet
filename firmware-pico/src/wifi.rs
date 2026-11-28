@@ -156,12 +156,12 @@ impl Wifi {
     /// link (at boot, after a failed join or DHCP, after the network went
     /// away), then starts the node.
     pub async fn run(mut self) -> ! {
-        if shell::saved_config().is_none() {
+        if !shell::has_wifi() {
             shell::set_wifi_state("not configured".into());
         }
         let mut next_try = Instant::now();
         loop {
-            let want_link = shell::saved_config().is_some() && !self.online();
+            let want_link = shell::has_wifi() && !self.online();
             let req = if want_link {
                 match select(shell::REQUESTS.receive(), Timer::at(next_try)).await {
                     Either::First(r) => Some(r),

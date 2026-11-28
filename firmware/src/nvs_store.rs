@@ -114,17 +114,26 @@ pub fn load_config(store: &dyn Store) -> Option<SavedConfig> {
             });
         }
     }
-    if networks.is_empty() {
-        return None;
-    }
-    Some(SavedConfig {
+    let cfg = SavedConfig {
         networks,
         hostname: store.get(K_HOST).unwrap_or_default(),
         auth_key: store.get(K_AUTH).filter(|k| !k.is_empty()),
         tcp_port: store.get(K_PORT).and_then(|p| p.parse().ok()),
         baud_rate: store.get(K_BAUD).and_then(|b| b.parse().ok()),
         usb_driver: store.get(K_USBDRV).filter(|d| !d.is_empty()),
-    })
+    };
+    // Settings made before any Wi-Fi network count too: the wizard saves
+    // what this returns, and dropping them there lost them (a board set to
+    // `usbdrv usbip` came out of the wizard in serial mode).
+    if cfg == SavedConfig::default() {
+        return None;
+    }
+    Some(cfg)
+}
+
+/// Whether a Wi-Fi network is known, which normal mode needs.
+pub fn has_wifi(cfg: &Option<SavedConfig>) -> bool {
+    cfg.as_ref().is_some_and(|c| !c.networks.is_empty())
 }
 
 /// Stores the configuration. A new auth key means the node must register

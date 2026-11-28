@@ -102,12 +102,12 @@ fn main() -> Result<()> {
 
     let config = nvs_store::load_config(store.as_ref());
     let registered = nvs_store::is_registered(store.as_ref());
-    let setup_mode = setup_requested || config.is_none() || !registered;
+    let setup_mode = setup_requested || !nvs_store::has_wifi(&config) || !registered;
     info!(
         "boot mode: {}",
         if setup_requested {
             "setup (button)"
-        } else if config.is_none() {
+        } else if !nvs_store::has_wifi(&config) {
             "setup (no Wi-Fi configured)"
         } else if !registered {
             "setup (Tailscale login not completed)"
@@ -176,7 +176,7 @@ fn main() -> Result<()> {
         board,
     });
 
-    if let Some(cfg) = &config {
+    if let Some(cfg) = config.as_ref().filter(|c| !c.networks.is_empty()) {
         // Bring Wi-Fi up in the background; the shell can still reconfigure it.
         wifi.set_networks(cfg.networks.clone());
         let w = wifi.clone();
