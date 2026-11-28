@@ -1062,7 +1062,8 @@ impl UsbIp {
         let (code, actual) = st.internal_done.remove(&key).expect("checked");
         drop(st);
         unsafe { usb::usb_host_transfer_free(t) };
-        reply_status(code, actual, 0).0
+        // A control transfer's count includes its 8-byte setup packet.
+        reply_status(code, actual.saturating_sub(8), 0).0
     }
 
     fn set_interface(&self, interface: u8, alt: u8, setup: [u8; 8]) -> i32 {

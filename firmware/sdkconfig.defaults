@@ -61,6 +61,11 @@ CONFIG_MBEDTLS_SSL_MAX_CONTENT_LEN=8192
 # ---- USB: the native port is USB Serial/JTAG (setup console) or USB-OTG host (normal mode).
 # Keep the IDF console off USB Serial/JTAG so the setup shell owns it.
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
+# The host library refuses to enumerate a device whose configuration
+# descriptor is longer than this (default 256). A UVC camera's runs to
+# kilobytes (a SANWA document camera, 04fc:2680: 1434 bytes). The buffer is
+# taken per attached device, and there is one.
+CONFIG_USB_HOST_CONTROL_TRANSFER_MAX_SIZE=4096
 
 # ---- Size ----
 CONFIG_COMPILER_OPTIMIZATION_SIZE=y
